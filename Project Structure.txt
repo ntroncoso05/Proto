@@ -1,0 +1,13 @@
+textmy_vulkan_engine/
+├── CMakeLists.txt             # Root configuration
+├── cmake/                     # Optional custom finder scripts
+├── engine/                    # Engine Framework Library
+│   ├── CMakeLists.txt
+│   ├── include/
+│   │   └── engine.hpp
+│   └── source/
+│       └── engine.cpp
+└── app/                       # Application Executable
+    ├── CMakeLists.txt
+    └── source/
+        └── main.cpp
