@@ -14,43 +14,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 find_package(Vulkan REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
+find_package(Stb REQUIRED)
+# Find the package provided by vcpkg
+find_package(tinyobjloader CONFIG REQUIRED)
 
 # No C++20 modules
-set(CMAKE_CXX_SCAN_FOR_MODULES OFF) 
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-# Proto executable
-#add_executable(Proto)
-
-# Proto sources and headers
-#file(GLOB_RECURSE Proto_SOURCES CONFIGURE_DEPENDS 
-#    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-#    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
-#    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp"
-#    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.inl"
-#)
-
-#target_sources(Proto PRIVATE ${Proto_SOURCES})
-
-# Proto include dirs
-#target_include_directories(Proto PRIVATE
-#    ${CMAKE_CURRENT_SOURCE_DIR}/src
-#)
-
-# Preprocessor defines
-#target_compile_definitions(Proto PRIVATE
-#    MY_TEST_DEFINE
-#)
-
-# Automatically links to these libs
-#target_link_libraries(Proto PRIVATE
-    #SDL3::SDL3
-    #GLEW::GLEW
-#)
-
-# Add directories with any random loose .dlls or .libs here
-#target_link_directories(Proto PRIVATE
-  
-#)
+# Enable solution folders
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # Set configuration properties for Proto
 #if(MSVC)
@@ -68,18 +40,21 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 #    )
 #endif()
 
-# Set Proto as the startup project
-#set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT Proto)
-
-# Filters
-#source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Source Files" FILES ${Proto_SOURCES})
-
-# Enable solution folders
-#set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-
 # Include subdirectories
-add_subdirectory(engine)
-add_subdirectory(app)
+add_subdirectory(ProtoEngine)
+add_subdirectory(ProtoApp)
 
-# Set ProtoApp as the startup project
+# Set Playground as the startup project
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ProtoApp)
+
+#set_target_properties (${TEMPLATE_NAME} PROPERTIES CXX_STANDARD 20)
+
+# Define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS to treat VK_ERROR_OUT_OF_DATE_KHR as a success code
+target_compile_definitions(ProtoEngine PRIVATE "VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS" )
+
+#if(WIN32)
+#  if(${CMAKE_GENERATOR} MATCHES "Visual Studio.*")
+#    set_target_properties(${TEMPLATE_NAME} PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY ${TEMPLATE_DIR})
+#  endif()
+#endif()
+

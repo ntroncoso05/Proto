@@ -4,6 +4,8 @@
   "dependencies": [
     "glfw3",
     "glm",
-    "glew"
+    "glew",
+    "stb",
+    "tinyobjloader"
   ]
 }

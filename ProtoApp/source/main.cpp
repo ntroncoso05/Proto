@@ -1,4 +1,4 @@
-#include <engine.hpp>
+#include <core/engine.hpp>
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -10,7 +10,7 @@
 #include <cstring>
 
 int main() {
-    Core::Engine app;
+    Proto::Engine app;
     try {
         app.Initialize();
         app.Run();
