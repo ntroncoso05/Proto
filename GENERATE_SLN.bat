@@ -1,12 +1,4 @@
 @echo off
-
-REM Set command
-set CMAKE_CMD=cmake -G "Visual Studio 18 2026" -B ./build .
-
 cmake --preset vcpkg
-
-REM Run command
-echo %CMAKE_CMD%
-%CMAKE_CMD%
-
+cmake --build ./build --config Debug
 pause

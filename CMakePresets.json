@@ -2,14 +2,43 @@
   "version": 3,
   "configurePresets": [
     {
-      "name": "vcpkg",
-      "displayName": "vcpkg Preset",
+      "name": "vcpkg-base",
+      "displayName": "vcpkg Base Configuration",
       "description": "Applies the vcpkg toolchain for dependency management",
-      "binaryDir": "${sourceDir}/build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "CMAKE_VS_DEBUGGER_WORKING_DIRECTORY": "${sourceDir}"
       }
+    },
+    {
+      "name": "vcpkg-debug",
+      "displayName": "vcpkg Debug",
+      "inherits": "vcpkg-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "vcpkg-release",
+      "displayName": "vcpkg Release",
+      "inherits": "vcpkg-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "Debug",
+      "configurePreset": "vcpkg-debug"
+    },
+    {
+      "name": "Release",
+      "configurePreset": "vcpkg-release"
     }
   ]
 }

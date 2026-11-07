@@ -1,35 +1,29 @@
-set (APPLICATION_NAME "ProtoApp")
+set(APPLICATION_NAME "ProtoApp")
 
-# ProtoApp executable
-add_executable(${APPLICATION_NAME})
-
-# ProtoApp sources and headers
-file(GLOB_RECURSE Proto_SOURCES CONFIGURE_DEPENDS 
+file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS 
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/*.inl"
 )
 
-target_sources(${APPLICATION_NAME} PRIVATE ${Proto_SOURCES})
+add_executable(${APPLICATION_NAME} ${APP_SOURCES})
 
-# ProtoApp include dirs
-target_include_directories(${APPLICATION_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/app
-)
-
-# Links application to the internal engine layer
+target_include_directories(${APPLICATION_NAME} PRIVATE app)
 target_link_libraries(${APPLICATION_NAME} PRIVATE ProtoEngine)
 
-# Filters
-source_group(TREE "${CMAKE_SOURCE_DIR}/${APPLICATION_NAME}" FILES ${Proto_SOURCES})
+# Restored and unified preprocessor defines
+target_compile_definitions(${APPLICATION_NAME} PRIVATE
+    "PROTO_PLATFORM_WINDOWS" # <--- CRITICAL FIX: Activates the #ifdef macro layout block
+)
 
-# Preprocessor defines
-#target_compile_definitions(ProtoApp PRIVATE
-#    MY_TEST_DEFINE
-#)
+# Forces IDEs to treat the root project folder as the active sandbox working directory
+# Force the MSVC toolchain linker to extract the entry point out of the static library graph
+if(MSVC)
+    set_target_properties(${APPLICATION_NAME} PROPERTIES 
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    
+    # Tells the compiler to look into the ProtoEngine static library objects for main()
+    #target_link_options(${APPLICATION_NAME} PRIVATE "/INCLUDE:main")
+endif()
 
-# Add directories with any random loose .dlls or .libs here
-#target_link_directories(ProtoApp PRIVATE
-  
-#)
+#source_group(TREE "${CMAKE_SOURCE_DIR}/${APPLICATION_NAME}" FILES ${Proto_SOURCES})

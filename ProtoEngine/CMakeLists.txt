@@ -1,73 +1,137 @@
-set (LIBRARY_NAME "ProtoEngine")
+set(LIBRARY_NAME "ProtoEngine")
 
-file(GLOB_RECURSE Proto_SOURCES CONFIGURE_DEPENDS "*")
+# 1. Locate configuration-based dependencies provided by vcpkg
+find_package(Vulkan REQUIRED)
+find_package(glfw3 CONFIG REQUIRED)
+find_package(glm CONFIG REQUIRED)
+find_package(Stb REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
+find_package(ktx CONFIG REQUIRED)
+find_package(tinyobjloader CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 
-# Filters
-#source_group(TREE "${CMAKE_SOURCE_DIR}/${LIBRARY_NAME}" PREFIX "Source Files" FILES ${Proto_SOURCES})
-source_group(TREE "${CMAKE_SOURCE_DIR}/${LIBRARY_NAME}" FILES ${Proto_SOURCES})
+# 2. Handle TinyGLTF discovery manually (Header-Only package format)
+find_path(TINYGLTF_INCLUDE_DIR NAMES tiny_gltf.h REQUIRED)
 
-add_library(${LIBRARY_NAME} STATIC ${Proto_SOURCES})
-
-
-# ProtoEngine sources models(.obj)
-file(GLOB_RECURSE OBJ_SOURCES CONFIGURE_DEPENDS 
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/*.obj"
-)
-# Mark the .obj files so Visual Studio sets "Exclude From Build" to Yes
-set_source_files_properties(${OBJ_SOURCES} PROPERTIES 
-    HEADER_FILE_ONLY TRUE
-)
-
-# Copy the entire assets directory to the build directory after compiling
-add_custom_command(TARGET ${LIBRARY_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-        "${CMAKE_CURRENT_BINARY_DIR}/assets"
+# 3. Explicit Source collection
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS 
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp"
 )
 
-# Set up include boundaries
-target_include_directories(${LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_include_directories(${LIBRARY_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS})
+add_library(${LIBRARY_NAME} STATIC ${ENGINE_SOURCES} )
 
-# Link against the primary glslang targets
-# Note: Newer versions of glslang have consolidated many components into these main targets
-#target_link_libraries(MyTarget PRIVATE glslang::glslang glslang::SPIRV)
+# 4. Target Compile Definitions (Restored and modernized)
+target_compile_definitions(${LIBRARY_NAME} PRIVATE
+    "PROTO_PLATFORM_WINDOWS"
+    "PROTO_DEBUG"
+    "GLFW_INCLUDE_NONE"
+    "VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS" # Handles out-of-date swapchains gracefully
+)
 
-# Link your dependencies to the library context
+# 5. Global Include Boundaries
+target_include_directories(${LIBRARY_NAME} 
+    PUBLIC 
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"     # Registers the 'src' root folder for PCH context routing
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/Proto"
+        "${TINYGLTF_INCLUDE_DIR}"
+    PRIVATE 
+        ${Vulkan_INCLUDE_DIRS}
+)
+
+# 6. Precompiled Header Configuration
+# Passing an absolute path guarantees the build generator discovers the header immediately
+target_precompile_headers(${LIBRARY_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/protopch.hpp")
+
+# 7. Dependency Link Mapping
 target_link_libraries(${LIBRARY_NAME} PUBLIC 
-    Vulkan::Vulkan 
-    glfw 
+    Vulkan::Vulkan
+    spdlog::spdlog
+    glfw
     glm::glm
+    KTX::ktx
     tinyobjloader::tinyobjloader
-    #stb::image
+    imgui::imgui
 )
 
+# --- Unified Multi-Shader Slang Compilation Pipeline (Dynamic Entry Points) ---
 find_program(SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/bin REQUIRED)
 
-set(TEMPLATE_DIR ${CMAKE_BINARY_DIR}/${LIBRARY_NAME})
-set_target_properties (${LIBRARY_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${TEMPLATE_DIR})
-# Slang shader
-set (SHADER_TARGET ${LIBRARY_NAME}Shader)
-set (SHADERS_DIR ${TEMPLATE_DIR}/assets/shaders)
-set (SHADER_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/base.slang")
-set (ENTRY_POINTS -entry vertMain -entry fragMain)
-add_custom_command(OUTPUT ${SHADERS_DIR} COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADERS_DIR})
-add_custom_command(
-  OUTPUT  ${SHADERS_DIR}/slang.spv
-  COMMAND ${SLANGC_EXECUTABLE} ${SHADER_SOURCES} -target spirv -profile spirv_1_4 -emit-spirv-directly -fvk-use-entrypoint-name ${ENTRY_POINTS} -o ${SHADERS_DIR}/slang.spv
-  WORKING_DIRECTORY ${SHADERS_DIR}
-  DEPENDS ${SHADERS_DIR} ${SHADER_SOURCES}
-  COMMENT "Compiling Slang Shaders"
-  VERBATIM
-)
-add_custom_target(${SHADER_TARGET} DEPENDS ${SHADERS_DIR}/slang.spv)
-add_dependencies(${LIBRARY_NAME} ${SHADER_TARGET})
+set(SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/assets/shaders")
+set(SHADER_OUT_DIR "${CMAKE_SOURCE_DIR}/assets/shaders")
 
-# Generate the configuration header file
-# This takes a template file and creates a real header in the binary directory
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/ShaderConfig.hpp.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/ShaderConfig.hpp"
+# 1. Discover all raw .slang shader assets straight from your workspace root folder
+file(GLOB_RECURSE SLANG_SOURCES CONFIGURE_DEPENDS "${SHADER_SRC_DIR}/*.slang")
+
+set(SLANG_COMPILE_COMMANDS "")
+
+# Ensure the output folder exists before any shader tries to build
+list(APPEND SLANG_COMPILE_COMMANDS COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_OUT_DIR}")
+
+foreach(SHADER_FILE ${SLANG_SOURCES})
+    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
+    set(OUTPUT_SPV "${SHADER_OUT_DIR}/${SHADER_NAME}.spv")
+    
+    # --- DYNAMIC ENTRY POINT PARSING ---
+    # Read the first 10 lines of the shader file looking for entry point signatures
+    file(STRINGS "${SHADER_FILE}" SHADER_HEADERS LIMIT_COUNT 10 REGEX "//[ \t]*@entry:")
+    
+    set(DYNAMIC_ENTRY_ARGS "")
+    
+    if(SHADER_HEADERS)
+        foreach(HEADER_LINE ${SHADER_HEADERS})
+            # Extract the entry point function name after '@entry:'
+            string(REGEX REPLACE ".*@entry:[ \t]*([A-Za-z0-9_]+).*" "\\1" ENTRY_NAME "${HEADER_LINE}")
+            # Strip any trailing whitespace
+            string(STRIP "${ENTRY_NAME}" ENTRY_NAME)
+            
+            # Append it to the compilation flags array
+            list(APPEND DYNAMIC_ENTRY_ARGS -entry "${ENTRY_NAME}")
+        endforeach()
+    else()
+        # Fallback defaults if no @entry tag is provided in the file
+        set(DYNAMIC_ENTRY_ARGS -entry vertMain -entry fragMain)
+    endif()
+    
+    # Pack the compiler arguments sequence using the dynamically extracted flags
+    list(APPEND SLANG_COMPILE_COMMANDS 
+        COMMAND ${SLANGC_EXECUTABLE} "${SHADER_FILE}" 
+                -target spirv 
+                -profile spirv_1_4 
+                -emit-spirv-directly 
+                -fvk-use-entrypoint-name 
+                ${DYNAMIC_ENTRY_ARGS}
+                -o "${OUTPUT_SPV}"
+    )
+endforeach()
+
+# 3. Create the build target executing all commands sequentially
+add_custom_target(${LIBRARY_NAME}Shaders ALL 
+    ${SLANG_COMPILE_COMMANDS}
+    COMMENT "Executing Slang Pipeline: Compiling all .slang source file assets directly..."
+    VERBATIM
 )
-# Include the binary directory so ProtoEngine can find "ShaderConfig.h"
-target_include_directories(${LIBRARY_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+# 4. Freeze your engine compilation until this exact target resolves completely
+add_dependencies(${LIBRARY_NAME} ${LIBRARY_NAME}Shaders)
+
+# --- Generate the Configuration Header File ---
+# This takes your template file and builds the concrete header file
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ShaderConfig.hpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/src/Proto/ShaderConfig.hpp"
+)
+
+# Inject the generated folder location into the target's include collection
+target_include_directories(${LIBRARY_NAME} PRIVATE 
+    "${CMAKE_CURRENT_BINARY_DIR}/src"
+    "${CMAKE_CURRENT_BINARY_DIR}/src/Proto"
+)
+
+# Optional: Add this at the bottom of ProtoEngine/CMakeLists.txt 
+# if you want to visually browse your assets inside Visual Studio
+# file(GLOB_RECURSE VISUAL_ASSETS 
+#    "${CMAKE_CURRENT_SOURCE_DIR}/assets/models/*.obj"
+#    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/*.slang"
+# )
+# source_group("Assets" FILES ${VISUAL_ASSETS})

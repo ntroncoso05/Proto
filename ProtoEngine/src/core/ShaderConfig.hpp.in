@@ -1,4 +1,0 @@
-#pragma once
-
-// CMake will automatically replace this with the absolute path
-#define SHADER_BINARY_DIR "@CMAKE_CURRENT_BINARY_DIR@"

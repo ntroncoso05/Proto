@@ -4,8 +4,18 @@
   "dependencies": [
     "glfw3",
     "glm",
-    "glew",
     "stb",
-    "tinyobjloader"
+    "tinyobjloader",
+    "tinygltf",
+    "ktx",
+    "spdlog",
+    {
+      "name": "imgui",
+      "features": [
+        "vulkan-binding",
+        "glfw-binding",
+        "docking-experimental"
+      ]
+    }
   ]
 }
