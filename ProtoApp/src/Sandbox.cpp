@@ -23,6 +23,11 @@ public:
 
 	void OnUpdate(Proto::Timestep ts) override
 	{
+		// If the room entity hasn't been instantiated by OnAttach() yet, skip this frame tick safely!
+		if (!m_RoomEntity) {
+			return;
+		}
+
 		// 1. Check if ImGui is capturing input. If true, block keyboard locomotion controls completely.
 		if (!ImGui::GetIO().WantCaptureKeyboard)
 		{
@@ -126,11 +131,11 @@ public:
 
 		// STEP A: TRIGGER PBR SHADER & PIPELINE COMPILATION ON LAYER ENTRY
 		// At this point in the engine lifecycle, VulkanRenderer is guaranteed to be fully resident!
-		auto& pbrRenderer = Proto::ServiceLocator::Get<Proto::SceneRenderer>();
-		if (!pbrRenderer.CreatePBRPipeline()) {
-			std::cerr << "[FATAL]: Failed to compile PBR pipelines during scene initialization!" << std::endl;
-			return;
-		}
+		//auto& pbrRenderer = Proto::ServiceLocator::Get<Proto::SceneRenderer>();
+		//if (!pbrRenderer.CreatePBRPipeline()) {
+		//	std::cerr << "[FATAL]: Failed to compile PBR pipelines during scene initialization!" << std::endl;
+		//	return;
+		//}
 
 		// STEP 1: FORCE THE GPU TO GO IDLE BEFORE LOADING ANY TEXTURES!
 		// This clears the 'image has not been acquired' race conditions and lets EndSingleTimeCommands upload textures successfully!

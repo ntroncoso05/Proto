@@ -41,8 +41,8 @@ namespace Proto {
 		ServiceLocator::Register<VulkanRenderer>(&apiContext);
 		ServiceLocator::Register<RendererAPI>(&apiContext);
 
-		m_3DRenderer = std::make_unique<SceneRenderer>();
-		ServiceLocator::Register<SceneRenderer>(m_3DRenderer.get());
+		//m_3DRenderer = std::make_unique<SceneRenderer>();
+		//ServiceLocator::Register<SceneRenderer>(m_3DRenderer.get());
 
 		// 2. Initialize and allocate your new high-level scene ImGuiPipeline pass manager
 		m_ImGuiPipeline = std::make_unique<ImGuiPipeline>();

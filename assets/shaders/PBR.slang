@@ -151,10 +151,19 @@ VSOutput VSMain(VSInput input)
     return output;
 }
 
+// Modify output layout structure for deferred storage
+struct GBufferOutput {
+    [[vk::location(0)]] float4 Position : SV_Target0; // GBuffer_Position
+    [[vk::location(1)]] float4 Normal   : SV_Target1; // GBuffer_Normal
+    [[vk::location(2)]] float4 Albedo   : SV_Target2; // GBuffer_Albedo
+};
+
 // Fragment shader entry point - Executes once per pixel
 [[shader("fragment")]]
-float4 PSMain(VSOutput input) : SV_TARGET
+GBufferOutput PSMain(VSOutput input) : SV_TARGET
 {
+    GBufferOutput output;
+
     // === MATERIAL PROPERTY SAMPLING ===
     // Sample base color texture and apply material color factor
     //float4 baseColor = baseColorMap.Sample(baseColorSampler, input.UV) * material.baseColorFactor;
@@ -193,6 +202,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
     //    // Transform normal from tangent space to world space
     //    N = normalize(mul(tangentNormal, TBN));
     //}
+
     // === NORMAL CALCULATION ===
     // Start with interpolated surface normal from the vertex stage
     float3 N = normalize(input.Normal);
@@ -283,7 +293,9 @@ float4 PSMain(VSOutput input) : SV_TARGET
 
     // === AMBIENT AND EMISSIVE ===
     // Add simple ambient lighting (should be replaced with IBL in production)
-    float3 ambient = float3(0.03, 0.03, 0.03) * baseColor.rgb * ao;
+    //float3 ambient = float3(0.03, 0.03, 0.03) * baseColor.rgb * ao;
+    float3 ambientSkyColor = float3(0.12, 0.15, 0.20); 
+    float3 ambient = ambientSkyColor * baseColor.rgb * ao;
 
     // Combine all lighting contributions
     float3 color = ambient + Lo + emissive;
@@ -296,5 +308,12 @@ float4 PSMain(VSOutput input) : SV_TARGET
     color = pow(color, float3(1.0 / ubo.gamma, 1.0 / ubo.gamma, 1.0 / ubo.gamma));
 
     // Output final color with original alpha
-    return float4(color, baseColor.a);
+    //return float4(color, baseColor.a);
+
+    // 2. PACK RAW ATTRIBUTES DIRECTLY TO THE G-BUFFER (No lighting calculations here!)
+    output.Position = float4(input.WorldPos, 1.0);
+    output.Normal   = float4(N, 1.0);
+    output.Albedo   = baseColor;
+
+    return output;
 }

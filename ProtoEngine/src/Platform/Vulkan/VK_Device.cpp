@@ -48,10 +48,11 @@ namespace Proto
 		}
 
 		// query for Vulkan 1.3 features
-		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT> featureChain = {
+		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceVulkan11Features> featureChain = {
 			{.features = {.samplerAnisotropy = true}},                   // vk::PhysicalDeviceFeatures2 //{.features = {.sampleRateShading = vk::True}}, // enable Sample Shading which will improve the image quality even further, though at an additional performance cost
 			{.synchronization2 = true, .dynamicRendering = true},        // vk::PhysicalDeviceVulkan13Features
-			{.extendedDynamicState = true}                               // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
+			{.extendedDynamicState = true},                               // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
+			{.shaderDrawParameters = vk::True}
 		};
 
 		// create a Device
@@ -95,10 +96,13 @@ namespace Proto
 		// Check if the physicalDevice supports the required features
 		auto features = physicalDevice.template getFeatures2<vk::PhysicalDeviceFeatures2,
 			vk::PhysicalDeviceVulkan13Features,
-			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
+			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
+			vk::PhysicalDeviceVulkan11Features >();
+
 		bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy &&
 			features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
-			features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
+			features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState &&
+			features.template get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters;
 
 		// Return true if the physicalDevice meets all the criteria
 		return supportsVulkan1_3 && supportsGraphicsAndPresent && supportsAllRequiredExtensions && supportsRequiredFeatures;

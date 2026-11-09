@@ -27,8 +27,12 @@ namespace Proto
 		vk::Extent2D                     swapChainExtent;
 		std::vector<vk::raii::ImageView> swapChainImageViews;
 
+		vk::raii::Image        depthImage{ nullptr };
+		vk::raii::DeviceMemory depthImageMemory{ nullptr };
+		vk::raii::ImageView    depthImageView{ nullptr };
 	private:
 		vk::Extent2D ChooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities);
+		void ReallocateDepthResources(uint32_t width, uint32_t height);
 		uint32_t m_FrameIndex = 0;
 	};
 

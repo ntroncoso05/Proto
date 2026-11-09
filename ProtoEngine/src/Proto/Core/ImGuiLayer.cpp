@@ -182,7 +182,7 @@ namespace Proto {
                 window->SetCursorMode(true);
 
                 // Clear active ImGui tracking values to prevent sticky-button traps
-                io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+                //io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 
                 event.Handled = true;
                 return true;

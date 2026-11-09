@@ -86,5 +86,7 @@ namespace Proto
         void handleMouseButton(int button, bool pressed);       // Process mouse button events (v1.87+)
         bool getWantKeyCapture();                               // Query if ImGui wants keyboard focus
         void charPressed(uint32_t key);                         // Handle character input for text widgets
+
+        inline vk::Sampler GetSampler() const { return *sampler; }
     };
 }

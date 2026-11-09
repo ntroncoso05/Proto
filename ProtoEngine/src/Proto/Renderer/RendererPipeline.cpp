@@ -24,7 +24,39 @@ namespace Proto
         return vk::Format::eD32Sfloat;
     }
 
-    SceneRenderer::SceneRenderer(vk::raii::Device& dev, vk::Queue queue) : device(std::move(dev)), graphicsQueue(queue)
+    //void SceneRenderer::ValidateDepthResources(uint32_t width, uint32_t height)
+    //{
+    //    if (m_DepthWidth == width && m_DepthHeight == height && *m_DepthImageView) {
+    //        return; // Allocation matches perfectly, skip re-creation
+    //    }
+    //
+    //    auto& renderer = VulkanRenderer::Get();
+    //    auto* imgUtil = renderer.GetVulkanImageSubsystem();
+    //    vk::Format depthFormat = findDepthFormat();
+    //
+    //    // Clear old handles safely
+    //    m_DepthImageView = nullptr;
+    //    m_DepthMemory = nullptr;
+    //    m_DepthImage = nullptr;
+    //
+    //    // Create 1x Single Sampled Optimal Depth Buffer Context
+    //    auto [img, mem] = imgUtil->CreateImage(
+    //        width, height, 1, vk::SampleCountFlagBits::e1, depthFormat,
+    //        vk::ImageTiling::eOptimal,
+    //        vk::ImageUsageFlagBits::eDepthStencilAttachment,
+    //        vk::MemoryPropertyFlagBits::eDeviceLocal
+    //    );
+    //
+    //    m_DepthImage = std::move(img);
+    //    m_DepthMemory = std::move(mem);
+    //    m_DepthImageView = imgUtil->CreateImageView(*m_DepthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
+    //
+    //    m_DepthWidth = width;
+    //    m_DepthHeight = height;
+    //    std::cout << "[ENGINE LOG]: Allocated dynamic depth buffer at size: " << width << "x" << height << std::endl;
+    //}
+
+    SceneRenderer::SceneRenderer(vk::raii::Device& dev, vk::Queue queue) : device(dev), graphicsQueue(queue)
     {
         // Create command pool
         // ...
@@ -32,13 +64,15 @@ namespace Proto
         // ...
         // Set up render passes
         SetupRenderPasses();
+        CreatePBRPipeline();
+        CreateDeferredLightingPipeline();
     }
 
     void SceneRenderer::Render(const std::vector<Entity*>& entities, vk::raii::CommandBuffer& activeCmdBuffer, uint32_t imageIndex)
     {
-        cullingSystem.CullScene(entities);
-        auto visibleEntities = cullingSystem.GetVisibleEntities();
-
+        //cullingSystem.CullScene(entities);
+        //auto visibleEntities = cullingSystem.GetVisibleEntities();
+        auto visibleEntities = entities;
         if (visibleEntities.empty()) {
             visibleEntities = entities;
         }
@@ -129,44 +163,63 @@ namespace Proto
             }
         }
 
-        // 🟩 STAGE 2: STANDARD OPEN RENDERING PASS
-        vk::Image swapchainImage = swapchainSubsystem->swapChainImages[imageIndex];
-        vk::ImageView swapchainView = swapchainSubsystem->swapChainImageViews[imageIndex];
+        // STAGE 2: STANDARD OPEN RENDERING PASS
+        //vk::Image swapchainImage = swapchainSubsystem->swapChainImages[imageIndex];
+        //vk::ImageView swapchainView = swapchainSubsystem->swapChainImageViews[imageIndex];
 
-        vk::ImageMemoryBarrier barrierToRender{
-            .srcAccessMask = vk::AccessFlagBits::eNone,
-            .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-            .oldLayout = vk::ImageLayout::eUndefined,
-            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = swapchainImage,
-            .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
-        };
-
-        activeCmdBuffer.pipelineBarrier(
-            vk::PipelineStageFlagBits::eTopOfPipe,
-            vk::PipelineStageFlagBits::eColorAttachmentOutput,
-            vk::DependencyFlags(), {}, {}, { barrierToRender }
-        );
-
-        vk::ClearValue clearColor = vk::ClearColorValue(std::array<float, 4>{0.1f, 0.1f, 0.15f, 1.0f});
-
-        vk::RenderingAttachmentInfo colorAttachment;
-        colorAttachment.setImageView(swapchainView)
-            .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
-            .setLoadOp(vk::AttachmentLoadOp::eClear)
-            .setStoreOp(vk::AttachmentStoreOp::eStore)
-            .setClearValue(clearColor);
-
-        vk::RenderingInfo renderingInfo;
-        renderingInfo.setRenderArea(vk::Rect2D({ 0, 0 }, { width, height }))
-            .setLayerCount(1)
-            .setColorAttachmentCount(1)
-            .setPColorAttachments(&colorAttachment)
-            .setPDepthAttachment(nullptr);
-
-        activeCmdBuffer.beginRendering(renderingInfo);
+        //vk::ImageMemoryBarrier barrierToRender{
+        //    .srcAccessMask = vk::AccessFlagBits::eNone,
+        //    .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+        //    .oldLayout = vk::ImageLayout::eUndefined,
+        //    .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        //    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        //    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        //    .image = swapchainImage,
+        //    .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
+        //};
+        //
+        //vk::ImageMemoryBarrier barrierToRenderDepth{
+        //   .srcAccessMask = vk::AccessFlagBits::eNone,
+        //   .dstAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+        //   .oldLayout = vk::ImageLayout::eUndefined,
+        //   .newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+        //   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        //   .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        //   .image = *swapchainSubsystem->depthImage,
+        //   .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eDepth, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
+        //};
+        //
+        //activeCmdBuffer.pipelineBarrier(
+        //    vk::PipelineStageFlagBits::eTopOfPipe,
+        //    vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+        //    vk::DependencyFlags(), {}, {}, { barrierToRender, barrierToRenderDepth }
+        //);
+        //
+        //vk::ClearValue clearColor = vk::ClearColorValue(std::array<float, 4>{0.1f, 0.1f, 0.15f, 1.0f});
+        //vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0); // Far-plane reset
+        //
+        //vk::RenderingAttachmentInfo colorAttachment;
+        //colorAttachment.setImageView(swapchainView)
+        //    .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+        //    .setLoadOp(vk::AttachmentLoadOp::eClear)
+        //    .setStoreOp(vk::AttachmentStoreOp::eStore)
+        //    .setClearValue(clearColor);
+        //
+        //vk::RenderingAttachmentInfo depthAttachment;
+        //depthAttachment.setImageView(*swapchainSubsystem->depthImageView) // 🟩 Read directly from swapchain subsystem resource managers!
+        //    .setImageLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal)
+        //    .setLoadOp(vk::AttachmentLoadOp::eClear)
+        //    .setStoreOp(vk::AttachmentStoreOp::eDontCare)
+        //    .setClearValue(clearDepth);
+        //
+        //vk::RenderingInfo renderingInfo;
+        //renderingInfo.setRenderArea(vk::Rect2D({ 0, 0 }, { width, height }))
+        //    .setLayerCount(1)
+        //    .setColorAttachmentCount(1)
+        //    .setPColorAttachments(&colorAttachment)
+        //    .setPDepthAttachment(&depthAttachment);
+        //
+        //activeCmdBuffer.beginRendering(renderingInfo);
 
         // Bind our verified graphics state context layout definitions
         if (*pbrPipeline) {
@@ -221,18 +274,18 @@ namespace Proto
             }
         }
 
-        activeCmdBuffer.endRendering();
+        //activeCmdBuffer.endRendering();
     }
 
     bool SceneRenderer::CreatePBRPipeline() {
         try {
-            if (!ServiceLocator::Contains<VulkanRenderer>()) {
-                std::cerr << "[WARN]: SceneRenderer cannot compile PBR pipelines because VulkanRenderer is not registered yet!" << std::endl;
-                return false;
-            }
+            //if (!ServiceLocator::Contains<VulkanRenderer>()) {
+            //    std::cerr << "[WARN]: SceneRenderer cannot compile PBR pipelines because VulkanRenderer is not registered yet!" << std::endl;
+            //    return false;
+            //}
 
-            auto& lowLevelRenderer = ServiceLocator::Get<VulkanRenderer>();
-            auto& device = lowLevelRenderer.vulkanContext->GetDevice().logicalDevice;
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
 
             auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("assets/shaders/pbr.spv");
             vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
@@ -289,13 +342,21 @@ namespace Proto
             depthStencil.setDepthTestEnable(true).setDepthWriteEnable(true).setDepthCompareOp(vk::CompareOp::eLess)
                 .setDepthBoundsTestEnable(false).setStencilTestEnable(false);
 
-            vk::PipelineColorBlendAttachmentState colorBlendAttachment;
-            colorBlendAttachment.setColorWriteMask(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA)
-                .setBlendEnable(true).setSrcColorBlendFactor(vk::BlendFactor::eSrcAlpha).setDstColorBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha)
-                .setColorBlendOp(vk::BlendOp::eAdd).setSrcAlphaBlendFactor(vk::BlendFactor::eOne).setDstAlphaBlendFactor(vk::BlendFactor::eZero).setAlphaBlendOp(vk::BlendOp::eAdd);
+            // 🟩 MRT FIX: Configure 3 matching attachment blend states!
+            std::array<vk::PipelineColorBlendAttachmentState, 3> blendAttachments;
+            for (size_t i = 0; i < 3; ++i) {
+                blendAttachments[i].setColorWriteMask(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA)
+                    .setBlendEnable(false);
+            }
+            //vk::PipelineColorBlendAttachmentState colorBlendAttachment;
+            //colorBlendAttachment.setColorWriteMask(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA)
+            //    .setBlendEnable(true).setSrcColorBlendFactor(vk::BlendFactor::eSrcAlpha).setDstColorBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha)
+            //    .setColorBlendOp(vk::BlendOp::eAdd).setSrcAlphaBlendFactor(vk::BlendFactor::eOne).setDstAlphaBlendFactor(vk::BlendFactor::eZero).setAlphaBlendOp(vk::BlendOp::eAdd);
 
             vk::PipelineColorBlendStateCreateInfo colorBlending;
-            colorBlending.setLogicOpEnable(false).setAttachmentCount(1).setPAttachments(&colorBlendAttachment);
+            colorBlending.setLogicOpEnable(false)
+                .setAttachmentCount(static_cast<uint32_t>(blendAttachments.size()))
+                .setPAttachments(blendAttachments.data());
 
             vk::PushConstantRange pushConstantRange;
             pushConstantRange.setStageFlags(vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment).setOffset(0).setSize(sizeof(PushConstantBlock));
@@ -349,11 +410,25 @@ namespace Proto
                 .setPColorBlendState(&colorBlending).setPDynamicState(&dynamicState).setLayout(*pbrPipelineLayout)
                 .setRenderPass(nullptr).setSubpass(0).setBasePipelineHandle(nullptr);
 
+            // 🟩 MRT FIX: Map the 3 format types to match your BeginPass colorAttachments array!
+            std::array<vk::Format, 3> gBufferFormats = {
+                vk::Format::eR16G16B16A16Sfloat, // Target 0: Position
+                vk::Format::eR16G16B16A16Sfloat, // Target 1: Normal
+                vk::Format::eR8G8B8A8Unorm       // Target 2: Albedo
+            };
+
             vk::PipelineRenderingCreateInfo renderingInfo;
-            renderingInfo.setColorAttachmentCount(1).setPColorAttachmentFormats(&swapChainImageFormat).setDepthAttachmentFormat(findDepthFormat());
+            renderingInfo.setColorAttachmentCount(static_cast<uint32_t>(gBufferFormats.size()))
+                .setPColorAttachmentFormats(gBufferFormats.data())
+                .setDepthAttachmentFormat(findDepthFormat());
             pipelineInfo.setPNext(&renderingInfo);
 
             pbrPipeline = device.createGraphicsPipeline(nullptr, pipelineInfo);
+
+            // 🟩 ADD THIS CRITICAL DEBUG TRAP:
+            if (!*pbrPipeline) {
+                throw std::runtime_error("[FATAL ENGINE ERROR]: PBR Graphics Pipeline compilation returned nullptr! Check shader attributes mapping.");
+            }
 
             // Keep uboDescriptorSetLayout alive by moving it or mapping its lifetime into the class properties if required, 
             // but since pipeline layout creation processes copies of handles immediately, leaving it scoped here is perfectly safe!
@@ -388,7 +463,7 @@ namespace Proto
 
         // Build a precise, clean perspective matrix
         float fovRadians = glm::radians(45.0f);
-        float aspect = 1280.0f / 720.0f;
+        float aspect = static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height);
         glm::mat4 projection = glm::perspective(fovRadians, aspect, 0.1f, 100.0f);
 
         // 🟩 CLEAN VULKAN Y-FLIP: Rotate the clip space coordinates by 180 degrees 
@@ -397,28 +472,28 @@ namespace Proto
         glm::mat4 correction = glm::scale(glm::mat4(1.0f), glm::vec3(1.0f, -1.0f, 1.0f));
         ubo.proj = correction * projection;
 
-        // Set up lights
-        // Light 1: White light from above
-        ubo.lightPositions[0] = glm::vec4(0.0f, 5.0f, 5.0f, 1.0f);
-        ubo.lightColors[0] = glm::vec4(300.0f, 300.0f, 300.0f, 1.0f);
+        // Set up lights with physically balanced intensities
+        // Light 1: Pure White Light coming from slightly behind the camera view tracking
+        ubo.lightPositions[0] = glm::vec4(0.0f, 10.0f, 8.0f, 1.0f);
+        ubo.lightColors[0] = glm::vec4(45.0f, 45.0f, 45.0f, 1.0f);
 
-        // Light 2: Blue light from the left
-        ubo.lightPositions[1] = glm::vec4(-5.0f, 0.0f, 0.0f, 1.0f);
-        ubo.lightColors[1] = glm::vec4(0.0f, 0.0f, 300.0f, 1.0f);
+        // Light 2: Soft Blue fill light coming from the left to handle shadows
+        ubo.lightPositions[1] = glm::vec4(-10.0f, 2.0f, 0.0f, 1.0f);
+        ubo.lightColors[1] = glm::vec4(5.0f, 5.0f, 15.0f, 1.0f);
 
-        // Light 3: Red light from the right
-        ubo.lightPositions[2] = glm::vec4(5.0f, 0.0f, 0.0f, 1.0f);
-        ubo.lightColors[2] = glm::vec4(300.0f, 0.0f, 0.0f, 1.0f);
+        // Light 3: Soft Amber rim light coming from behind the room mesh structure
+        ubo.lightPositions[2] = glm::vec4(0.0f, 1.0f, -10.0f, 1.0f);
+        ubo.lightColors[2] = glm::vec4(15.0f, 10.0f, 5.0f, 1.0f);
 
-        // Light 4: Green light from behind
+        // Light 4: Fill Light
         ubo.lightPositions[3] = glm::vec4(0.0f, -5.0f, 0.0f, 1.0f);
-        ubo.lightColors[3] = glm::vec4(0.0f, 300.0f, 0.0f, 1.0f);
+        ubo.lightColors[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f); // Leave offline
 
         // Set camera position for view-dependent effects
         ubo.camPos = glm::vec4(camera ? camera->GetPosition() : glm::vec3(2.0f, 2.0f, 2.0f), 1.0f);
 
         // Set PBR parameters
-        ubo.exposure = 4.5f;
+        ubo.exposure = 1.0f;
         ubo.gamma = 2.2f;
         ubo.prefilteredCubeMipLevels = 1.0f;
         ubo.scaleIBLAmbient = 1.0f;
@@ -464,14 +539,137 @@ namespace Proto
         );
     }
 
+    bool SceneRenderer::CreateDeferredLightingPipeline()
+    {
+        try {
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
+
+            // 1. Load your separate compiled lighting pass bytecode stream
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("assets/shaders/DeferredLighting.spv");
+            vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
+
+            vk::PipelineShaderStageCreateInfo vertStageInfo{
+                .stage = vk::ShaderStageFlagBits::eVertex,
+                .module = *shaderModule,
+                .pName = "VSMain"
+            };
+
+            vk::PipelineShaderStageCreateInfo fragStageInfo{
+                .stage = vk::ShaderStageFlagBits::eFragment,
+                .module = *shaderModule,
+                .pName = "PSMain"
+            };
+            std::array<vk::PipelineShaderStageCreateInfo, 2> shaderStages = { vertStageInfo, fragStageInfo };
+
+            // CRITICAL DEFERRED FIX: Empty Vertex Input State Layout!
+            // We bind no CPU structures because the shader builds the fullscreen canvas procedurally.
+            vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+
+            vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
+                .topology = vk::PrimitiveTopology::eTriangleList
+            };
+
+            vk::PipelineViewportStateCreateInfo viewportState{ .viewportCount = 1, .scissorCount = 1 };
+            std::vector<vk::DynamicState> dynamicStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+            vk::PipelineDynamicStateCreateInfo dynamicState{ .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()), .pDynamicStates = dynamicStates.data() };
+
+            vk::PipelineRasterizationStateCreateInfo rasterizer{
+                .polygonMode = vk::PolygonMode::eFill,
+                .cullMode = vk::CullModeFlagBits::eNone, // Disable backface culling for full-screen quads
+                .frontFace = vk::FrontFace::eCounterClockwise,
+                .lineWidth = 1.0f
+            };
+
+            vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1 };
+
+            // 3. 🟩 DISABLE DEPTH WRITING: Lighting pass uses 2D screen sampling
+            vk::PipelineDepthStencilStateCreateInfo depthStencil{
+                .depthTestEnable = vk::False,
+                .depthWriteEnable = vk::False,
+                .depthCompareOp = vk::CompareOp::eAlways
+            };
+
+            vk::PipelineColorBlendAttachmentState colorBlendAttachment{
+                .blendEnable = vk::False,
+                .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
+            };
+            vk::PipelineColorBlendStateCreateInfo colorBlending{ .attachmentCount = 1, .pAttachments = &colorBlendAttachment };
+
+            // Pack layouts using your existing UBO set layout properties
+            //vk::DescriptorSetLayout pipelineSetLayouts[] = {
+            //    *lowLevelRenderer.vulkanCommandBuffer->descriptorSetLayout, // Set 0: Global Engine UBOs
+            //    *descriptorSetLayout                                       // Set 1: G-Buffer textures samplers mapping
+            //};
+            //
+            //vk::PipelineLayoutCreateInfo pipelineLayoutInfo{ .setLayoutCount = 2, .pSetLayouts = pipelineSetLayouts };
+            //m_DeferredPipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
+
+            // 🟩 FIXED: Compile a dedicated 3-binding descriptor set layout specifically for your 3 G-Buffer inputs!
+            std::array<vk::DescriptorSetLayoutBinding, 3> gBufferBindings;
+            for (uint32_t b = 0; b < 3; ++b) {
+                gBufferBindings[b] = vk::DescriptorSetLayoutBinding{
+                    .binding = b,
+                    .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                    .descriptorCount = 1,
+                    .stageFlags = vk::ShaderStageFlagBits::eFragment
+                };
+            }
+            vk::DescriptorSetLayoutCreateInfo gBufferLayoutInfo{
+                .bindingCount = static_cast<uint32_t>(gBufferBindings.size()),
+                .pBindings = gBufferBindings.data()
+            };
+
+            // Allocate a separate layout handle variable (ensure you declare vk::raii::DescriptorSetLayout m_DeferredSetLayout{nullptr}; in your class header private section)
+            m_DeferredSetLayout = device.createDescriptorSetLayout(gBufferLayoutInfo);
+
+            // Pack layouts for your deferred lighting pipeline
+            vk::DescriptorSetLayout deferredPipelineSetLayouts[] = {
+                *lowLevelRenderer.vulkanCommandBuffer->descriptorSetLayout, // Set 0: Global Engine UBOs
+                *m_DeferredSetLayout                                       // Set 1: 3 G-Buffer attachments
+            };
+
+            vk::PipelineLayoutCreateInfo pipelineLayoutInfo{ .setLayoutCount = 2, .pSetLayouts = deferredPipelineSetLayouts };
+            m_DeferredPipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
+
+            vk::GraphicsPipelineCreateInfo pipelineInfo{
+                .stageCount = static_cast<uint32_t>(shaderStages.size()),
+                .pStages = shaderStages.data(),
+                .pVertexInputState = &vertexInputInfo,
+                .pInputAssemblyState = &inputAssembly,
+                .pViewportState = &viewportState,
+                .pRasterizationState = &rasterizer,
+                .pMultisampleState = &multisampling,
+                .pDepthStencilState = &depthStencil,
+                .pColorBlendState = &colorBlending,
+                .pDynamicState = &dynamicState,
+                .layout = *m_DeferredPipelineLayout
+            };
+
+            // Link straight to backbuffer swapchain format requirements for final output
+            vk::PipelineRenderingCreateInfo renderingInfo;
+            renderingInfo.setColorAttachmentCount(1).setPColorAttachmentFormats(&swapChainImageFormat);
+            pipelineInfo.setPNext(&renderingInfo);
+
+            m_DeferredPipeline = device.createGraphicsPipeline(nullptr, pipelineInfo);
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "[DEFERRED ERROR]: Pipeline initialization skipped: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
     void SceneRenderer::SetupRenderPasses()
     {
-        // Create geometry pass
-        auto geometryPass = renderPassManager.AddRenderPass<GeometryPass>("GeometryPass", &cullingSystem);
-        // Create lighting pass
-        auto lightingPass = renderPassManager.AddRenderPass<LightingPass>("LightingPass", geometryPass, this);
-        // Create post-process pass
-        auto postProcessPass = renderPassManager.AddRenderPass<PostProcessPass>("PostProcessPass", lightingPass);
+        // Fetch the active renderer manager instance context
+        auto& renderer = VulkanRenderer::Get();
+        auto* globalManager = renderer.GetRenderPassManager(); // Add a public getter for m_RenderPassManager in VulkanRenderer if needed
+
+        // Register passes straight to the global manager executing in drawFrame!
+        auto geometryPass = globalManager->AddRenderPass<GeometryPass>("GeometryPass", &cullingSystem, this);
+        auto lightingPass = globalManager->AddRenderPass<LightingPass>("LightingPass", geometryPass, this);
+        auto postProcessPass = globalManager->AddRenderPass<PostProcessPass>("PostProcessPass", lightingPass);
         // Add post-process effects
         // ...
     }
@@ -516,11 +714,11 @@ namespace Proto
         }
     }
 
-    GeometryPass::GeometryPass(const std::string& name, CullingSystem* culling)
-        : RenderPass(name), cullingSystem(culling)
+    GeometryPass::GeometryPass(const std::string& name, CullingSystem* culling, SceneRenderer* renderer)
+        : RenderPass(name), cullingSystem(culling), sceneRenderer(renderer)
     {
-        // Create G-buffer render target
-        gBuffer = new RenderTarget(1920, 1080); // Example resolution
+        // Create G-buffer render targets matching standard workspace display layouts
+        gBuffer = new RenderTarget(1920, 1080, renderer->device); // Example resolution
         SetRenderTarget(gBuffer);
     }
 
@@ -529,28 +727,75 @@ namespace Proto
         delete gBuffer;
     }
 
-    void GeometryPass::BeginPass(vk::raii::CommandBuffer& commandBuffer)
+    void GeometryPass::BeginPass(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex)
     {
         auto& renderer = VulkanRenderer::Get();
         auto* swapchainSubsystem = renderer.vulkanSwapChain;
-        uint32_t currentFrame = swapchainSubsystem->GetFrameIndex();
-
         uint32_t width = swapchainSubsystem->swapChainExtent.width;
-        uint32_t height = swapchainSubsystem->swapChainExtent.height; 
+        uint32_t height = swapchainSubsystem->swapChainExtent.height;
 
-        // 2. Define clear metrics for each individual render channel target
         vk::ClearValue clearColor = vk::ClearColorValue(std::array<float, 4>{0.1f, 0.1f, 0.15f, 1.0f});
         vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
 
-        // 3. Configure Multi-Render Target (MRT) attachments array
-        vk::RenderingAttachmentInfo colorAttachment;
-        colorAttachment.setImageView(gBuffer->GetColorImageView()) // Position format (eR16G16B16A16Sfloat) // Normals format (eR16G16B16A16Sfloat) // Albedo format (eR8G8B8A8Unorm)
+        // Transition layouts for all 3 images via a pipeline barrier array
+        std::vector<vk::ImageMemoryBarrier> barriers;
+        auto addColorBarrier = [&](vk::Image img) {
+            barriers.push_back(vk::ImageMemoryBarrier{
+                .srcAccessMask = vk::AccessFlagBits::eNone,
+                .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                .oldLayout = vk::ImageLayout::eUndefined,
+                .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = img,
+                .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
+                });
+            };
+
+        // Gather images from the active target context
+        addColorBarrier(gBuffer->GetPositionImage());
+        addColorBarrier(gBuffer->GetNormalImage());
+        addColorBarrier(gBuffer->GetAlbedoImage());
+
+        // Separate depth attachment barrier track
+        barriers.push_back(vk::ImageMemoryBarrier{
+            .srcAccessMask = vk::AccessFlagBits::eNone,
+            .dstAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = gBuffer->GetDepthImage(),
+            .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eDepth, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
+            });
+
+        commandBuffer.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+            vk::DependencyFlags(), {}, {}, barriers
+        );
+
+        // Assemble MRT attachment configurations
+        std::array<vk::RenderingAttachmentInfo, 3> colorAttachments;
+
+        colorAttachments[0].setImageView(gBuffer->GetPositionImageView())
             .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
-            .setLoadOp(vk::AttachmentLoadOp::eClear) // Clears the canvas safely at the start of the frame pass
+            .setLoadOp(vk::AttachmentLoadOp::eClear)
             .setStoreOp(vk::AttachmentStoreOp::eStore)
             .setClearValue(clearColor);
 
-        // 4. Configure unified depth attachment channel
+        colorAttachments[1].setImageView(gBuffer->GetNormalImageView())
+            .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+            .setLoadOp(vk::AttachmentLoadOp::eClear)
+            .setStoreOp(vk::AttachmentStoreOp::eStore)
+            .setClearValue(clearColor);
+
+        colorAttachments[2].setImageView(gBuffer->GetAlbedoImageView())
+            .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+            .setLoadOp(vk::AttachmentLoadOp::eClear)
+            .setStoreOp(vk::AttachmentStoreOp::eStore)
+            .setClearValue(clearColor);
+
         vk::RenderingAttachmentInfo depthAttachment;
         depthAttachment.setImageView(gBuffer->GetDepthImageView())
             .setImageLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal)
@@ -558,31 +803,25 @@ namespace Proto
             .setStoreOp(vk::AttachmentStoreOp::eStore)
             .setClearValue(clearDepth);
 
-        // 5. Assemble unified dynamic rendering pass state configuration
         vk::RenderingInfo renderingInfo;
         renderingInfo.setRenderArea(vk::Rect2D({ 0, 0 }, { width, height }))
             .setLayerCount(1)
-            .setColorAttachmentCount(1)
-            .setPColorAttachments(&colorAttachment)
+            .setColorAttachmentCount(static_cast<uint32_t>(colorAttachments.size()))
+            .setPColorAttachments(colorAttachments.data())
             .setPDepthAttachment(&depthAttachment);
 
-        // Open the dynamic render pass context seamlessly!
         commandBuffer.beginRendering(renderingInfo);
     }
 
-    void GeometryPass::Render(vk::raii::CommandBuffer& commandBuffer)
+    void GeometryPass::Render(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex)
     {
         // 1. Cull the scene using your tracking camera parameters
         cullingSystem->CullScene(Entity::GetActiveSceneEntities());
         const auto& visibleEntities = cullingSystem->GetVisibleEntities();
 
-        // 2. Safely render each visible element into the active render targets
-        for (auto entity : visibleEntities) {
-            if (entity && entity->IsActive()) {
-                // This force-executes drawing logic inside our dynamic G-Buffer rendering pass!
-                entity->Render();
-            }
-        }
+        // FIXED DISCONNECT: Forward drawing execution directly to your cached SceneRenderer handle pointer!
+        // This forces your object tree to bind pipelines, update UBO bindings, and stream transforms.
+        sceneRenderer->Render(visibleEntities, commandBuffer, imageIndex);
     }
 
     void GeometryPass::EndPass(vk::raii::CommandBuffer& commandBuffer)
@@ -598,56 +837,111 @@ namespace Proto
         AddDependency(gPass->GetName());
     }
 
-    void LightingPass::BeginPass(vk::raii::CommandBuffer& commandBuffer)
+    void LightingPass::BeginPass(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex)
     {
-        // Begin rendering with dynamic rendering
-        vk::RenderingInfoKHR renderingInfo;
+        auto& lowLevelRenderer = VulkanRenderer::Get();
+        auto* swapchainSubsystem = lowLevelRenderer.vulkanSwapChain;
+        uint32_t currentFrame = swapchainSubsystem->GetFrameIndex();
 
-        // Set up color attachment for the lighting pass
+        // Query active window size bounds dynamically
+        uint32_t width = swapchainSubsystem->swapChainExtent.width;
+        uint32_t height = swapchainSubsystem->swapChainExtent.height;
+
+        // 🟩 FIX A: Fetch the real raw backbuffer image corresponding to this frame slot
+        // (We extract this out using the imageIndex passed down from your draw frame loops)
+        // Note: If imageIndex isn't tracked here, pull it safely from lowLevelRenderer or cached indices
+        vk::Image swapchainBackbufferImage = swapchainSubsystem->swapChainImages[imageIndex];
+
+        // 🟩 FIX B: TRANSITION THE BACKBUFFER FROM PRESENT/UNDEFINED TO WRITABLE ATTACHMENT OPTIMAL
+        // This bridges the gap and satisfies the exact driver requirements blocking your display output!
+        vk::ImageMemoryBarrier barrierToComposeColor{
+            .srcAccessMask = vk::AccessFlagBits::eNone,
+            .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+            .oldLayout = vk::ImageLayout::eUndefined, // Force overwrite old frame presentation contents cleanly
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = swapchainBackbufferImage,
+            .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
+        };
+
+        commandBuffer.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            vk::DependencyFlags(), {}, {}, { barrierToComposeColor }
+        );
+
+        // Configure your color attachment point to write directly to the hardware backbuffer view
         vk::RenderingAttachmentInfoKHR colorAttachment;
-        colorAttachment.setImageView(GetRenderTarget()->GetColorImageView())
+        colorAttachment.setImageView(swapchainSubsystem->swapChainImageViews[imageIndex]) // 🟩 Output straight onto backbuffer!
             .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
-            .setLoadOp(vk::AttachmentLoadOp::eLoad)
-            .setStoreOp(vk::AttachmentStoreOp::eStore);
+            .setLoadOp(vk::AttachmentLoadOp::eClear) // Clear out previous background tracks safely
+            .setStoreOp(vk::AttachmentStoreOp::eStore)
+            .setClearValue(vk::ClearColorValue(std::array<float, 4>{0.1f, 0.1f, 0.15f, 1.0f}));
 
-        // Configure rendering info
-        renderingInfo.setRenderArea(vk::Rect2D({ 0, 0 }, { GetRenderTarget()->GetWidth(), GetRenderTarget()->GetHeight() }))
+        vk::RenderingInfoKHR renderingInfo;
+        renderingInfo.setRenderArea(vk::Rect2D({ 0, 0 }, { width, height }))
             .setLayerCount(1)
             .setColorAttachmentCount(1)
-            .setPColorAttachments(&colorAttachment);
+            .setPColorAttachments(&colorAttachment)
+            .setPDepthAttachment(nullptr); // Screen composition quad requires no depth attachment tracking!
 
-        // Begin dynamic rendering
         commandBuffer.beginRendering(renderingInfo);
     }
 
-    void LightingPass::Render(vk::raii::CommandBuffer& commandBuffer)
+    void LightingPass::Render(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex)
     {
         auto& lowLevelRenderer = VulkanRenderer::Get();
+        auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
         uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
 
-        // 1. Bind your compiled advanced PBR pipeline layout state
-        // (This uses the pbrPipeline and layout we generated in createPBRPipeline)
-        commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *(sceneRenderer->pbrPipeline));
+        auto* gBufferTarget = geometryPass->GetGBufferTarget();
+        if (!gBufferTarget) return;
 
-        // 2. Setup your Dynamic State parameters to prevent viewport truncation
+        // 1. Transition all 3 G-Buffer layouts to Read-Only
+        auto transitionToRead = [&](vk::Image img) {
+            vk::ImageMemoryBarrier b{ .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite, .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                .oldLayout = vk::ImageLayout::eColorAttachmentOptimal, .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .image = img, .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1} };
+            commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, { b });
+            };
+        transitionToRead(gBufferTarget->GetPositionImage());
+        transitionToRead(gBufferTarget->GetNormalImage());
+        transitionToRead(gBufferTarget->GetAlbedoImage());
+
+        // 2. Bind Pipeline & Config Viewports
+        commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, sceneRenderer->GetDeferredPipeline());
+
         float width = static_cast<float>(lowLevelRenderer.vulkanSwapChain->swapChainExtent.width);
         float height = static_cast<float>(lowLevelRenderer.vulkanSwapChain->swapChainExtent.height);
         commandBuffer.setViewport(0, { vk::Viewport(0.0f, 0.0f, width, height, 0.0f, 1.0f) });
         commandBuffer.setScissor(0, { vk::Rect2D(vk::Offset2D(0, 0), lowLevelRenderer.vulkanSwapChain->swapChainExtent) });
 
-        // 3. Bind the unified descriptor sets (Containing global UBOs and G-Buffer texture descriptors)
-        // This allows your fragment shader to sample the G-Buffer maps as texture resources
-        commandBuffer.bindDescriptorSets(
-            vk::PipelineBindPoint::eGraphics,
-            *(sceneRenderer->pbrPipelineLayout),
-            0,
-            { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame] },
-            {}
-        );
+        // 3. Allocate Set 1 and write all 3 views into continuous descriptor bindings
+        vk::DescriptorSetLayout deferredLayout = sceneRenderer->GetDeferredSetLayout();
+        vk::DescriptorSetAllocateInfo allocInfo{ .descriptorPool = *lowLevelRenderer.vulkanCommandBuffer->descriptorPool, .descriptorSetCount = 1, .pSetLayouts = &deferredLayout };
+        auto gBufferDescriptorSets = logicalDevice.allocateDescriptorSets(allocInfo);
+        vk::raii::DescriptorSet gBufferSet = std::move(gBufferDescriptorSets.front());
 
-        // 4. --- THE SILVER BULLET FULL-SCREEN DRAW ---
-        // We bind NO vertex or index buffers! We pass 3 indices to generate 
-        // a single giant procedural triangle covering the entire -1.0 to 1.0 viewport clip space.
+        vk::Sampler textureSampler = lowLevelRenderer.imGui->GetSampler();
+
+        std::array<vk::DescriptorImageInfo, 3> imageInfos = {
+            vk::DescriptorImageInfo{textureSampler, gBufferTarget->GetPositionImageView(), vk::ImageLayout::eShaderReadOnlyOptimal},
+            vk::DescriptorImageInfo{textureSampler, gBufferTarget->GetNormalImageView(), vk::ImageLayout::eShaderReadOnlyOptimal},
+            vk::DescriptorImageInfo{textureSampler, gBufferTarget->GetAlbedoImageView(), vk::ImageLayout::eShaderReadOnlyOptimal}
+        };
+
+        std::array<vk::WriteDescriptorSet, 3> writes;
+        for (uint32_t b = 0; b < 3; ++b) {
+            writes[b] = vk::WriteDescriptorSet{ .dstSet = *gBufferSet, .dstBinding = b, .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &imageInfos[b] };
+        }
+        logicalDevice.updateDescriptorSets(writes, {});
+
+        // 4. Bind descriptor sets and draw full screen composition triangle
+        VkDescriptorSet layoutsArray[] = { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame], *gBufferSet };
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, sceneRenderer->GetDeferredPipelineLayout(), 0, vk::ArrayProxy<const vk::DescriptorSet>(2, reinterpret_cast<const vk::DescriptorSet*>(layoutsArray)), {});
+
         commandBuffer.draw(3, 1, 0, 0);
     }
 
@@ -716,7 +1010,7 @@ namespace Proto
             });
     }
 
-    void Rendergraph::AddPass(const std::string& name, const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, std::function<void(vk::raii::CommandBuffer&)> executeFunc)
+    void Rendergraph::AddPass(const std::string& name, const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, std::function<void(vk::raii::CommandBuffer&, uint32_t)> executeFunc)
 
     {
         Pass pass;
@@ -800,13 +1094,13 @@ namespace Proto
         }
 
         // Automatic Synchronization Object Creation. Generate semaphores for all dependencies identified during analysis
-        for (size_t i = 0; i < passes.size(); ++i) {
-            for (auto dep : dependencies[i]) {
-                // Create a GPU semaphore for this dependency relationship. The dependent pass will wait on this semaphore before executing
-                semaphores.emplace_back(device.createSemaphore({}));
-                semaphoreSignalWaitPairs.emplace_back(dep, i);    // (producer, consumer) pair
-            }
-        }
+        //for (size_t i = 0; i < passes.size(); ++i) {
+        //    for (auto dep : dependencies[i]) {
+        //        // Create a GPU semaphore for this dependency relationship. The dependent pass will wait on this semaphore before executing
+        //        semaphores.emplace_back(device.createSemaphore({}));
+        //        semaphoreSignalWaitPairs.emplace_back(dep, i);    // (producer, consumer) pair
+        //    }
+        //}
 
         // Physical Resource Allocation and Creation. Transform resource descriptions into actual GPU objects
         for (auto& [name, resource] : resources) {
@@ -837,138 +1131,112 @@ namespace Proto
             resource.image.bindMemory(*resource.memory, 0);               // Bind memory to image
 
             // Create image view for shader access
+            vk::ImageAspectFlags aspect = (name == "Depth") ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor;
             vk::ImageViewCreateInfo viewInfo;
             viewInfo.setImage(*resource.image)                          // Reference the created image
                 .setViewType(vk::ImageViewType::e2D)                    // 2D view type
                 .setFormat(resource.format)                             // Match image format
-                .setSubresourceRange({ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 });  // Full image access
+                .setSubresourceRange({ aspect, 0, 1, 0, 1 });  // Full image access
 
             resource.view = device.createImageView(viewInfo);           // Create shader-accessible view
         }
     }
 
-    void Rendergraph::Execute(vk::raii::CommandBuffer& commandBuffer, vk::Queue queue)
+    void Rendergraph::Execute(vk::raii::CommandBuffer& commandBuffer, vk::Queue queue, uint32_t imageIndex)
     {
-        // Execution state management for dynamic synchronization
-        std::vector<vk::CommandBuffer> cmdBuffers;           // Command buffer storage
-        std::vector<vk::Semaphore> waitSemaphores;           // Synchronization dependencies for current pass
-        std::vector<vk::PipelineStageFlags> waitStages;      // Pipeline stages to wait on
-        std::vector<vk::Semaphore> signalSemaphores;         // Semaphores to signal after current pass
-
-        // Ordered Pass Execution with Automatic Dependency Management
-        // Execute each pass in the computed dependency-safe order
         for (auto passIdx : executionOrder) {
             const auto& pass = passes[passIdx];
 
-            // Synchronization Setup - Collect Dependencies for Current Pass. Determine what this pass must wait for before executing
-            waitSemaphores.clear();
-            waitStages.clear();
-
-            for (size_t i = 0; i < semaphoreSignalWaitPairs.size(); ++i) {
-                if (semaphoreSignalWaitPairs[i].second == passIdx) {
-                    // This pass depends on the completion of another pass
-                    waitSemaphores.push_back(*semaphores[i]);                           // Wait for dependency completion
-                    waitStages.push_back(vk::PipelineStageFlagBits::eColorAttachmentOutput);  // Wait at output stage
-                }
-            }
-
-            // Collect semaphores that this pass will signal for dependent passes
-            signalSemaphores.clear();
-            for (size_t i = 0; i < semaphoreSignalWaitPairs.size(); ++i) {
-                if (semaphoreSignalWaitPairs[i].first == passIdx) {
-                    // Other passes depend on this pass's completion
-                    signalSemaphores.push_back(*semaphores[i]);                         // Signal completion for dependents
-                }
-            }
-
-            // Command Buffer Preparation and Resource Layout Transitions. Set up command recording and transition resources to appropriate layouts
-            commandBuffer.begin({});                                                   // Begin command recording
-
-            // Transition input resources to shader-readable layouts
+            // 1. Transition input resources to shader-readable layouts
             for (const auto& input : pass.inputs) {
                 auto& resource = resources[input];
+                bool isDepth = (resource.name == "Depth");
 
+                vk::ImageLayout targetReadLayout = isDepth
+                    ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
+                    : vk::ImageLayout::eShaderReadOnlyOptimal;
+
+                // 🟩 FIX: Transition from resource.finalLayout (what the producer pass wrote), NOT initialLayout (eUndefined)!
+                // Using eUndefined discards the rendered G-Buffer contents!
                 vk::ImageMemoryBarrier barrier;
-                barrier.setOldLayout(resource.initialLayout)                           // Current resource layout
-                    .setNewLayout(vk::ImageLayout::eShaderReadOnlyOptimal)          // Target layout for reading
-                    .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)                // No queue family transfer
-                    .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                    .setImage(*resource.image)                                      // Target image
-                    .setSubresourceRange({ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 })  // Full image range
-                    .setSrcAccessMask(vk::AccessFlagBits::eMemoryWrite)             // Previous write access
-                    .setDstAccessMask(vk::AccessFlagBits::eShaderRead);             // Required read access
-
-                // Insert pipeline barrier for safe layout transition
-                commandBuffer.pipelineBarrier(
-                    vk::PipelineStageFlagBits::eAllCommands,                           // Wait for all previous work
-                    vk::PipelineStageFlagBits::eFragmentShader,                        // Enable fragment shader access
-                    vk::DependencyFlagBits::eByRegion,                                 // Region-local dependency
-                    nullptr, nullptr, barrier                               // Image barrier only
-                );
-            }
-
-            // Transition output resources to render target layouts
-            for (const auto& output : pass.outputs) {
-                auto& resource = resources[output];
-
-                vk::ImageMemoryBarrier barrier;
-                barrier.setOldLayout(resource.initialLayout)                           // Current layout state
-                    .setNewLayout(vk::ImageLayout::eColorAttachmentOptimal)         // Optimal for color output
+                barrier.setOldLayout(resource.finalLayout)
+                    .setNewLayout(targetReadLayout)
                     .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                     .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                     .setImage(*resource.image)
-                    .setSubresourceRange({ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 })
-                    .setSrcAccessMask(vk::AccessFlagBits::eMemoryRead)              // Previous read access
-                    .setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite);   // Required write access
+                    .setSubresourceRange({ (isDepth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor), 0, 1, 0, 1 })
+                    .setSrcAccessMask(isDepth ? vk::AccessFlagBits::eDepthStencilAttachmentWrite : vk::AccessFlagBits::eColorAttachmentWrite)
+                    .setDstAccessMask(vk::AccessFlagBits::eShaderRead);
 
-                // Insert barrier for safe transition to writable state
+                vk::PipelineStageFlags srcStage = isDepth
+                    ? vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests
+                    : vk::PipelineStageFlagBits::eColorAttachmentOutput;
+
                 commandBuffer.pipelineBarrier(
-                    vk::PipelineStageFlagBits::eAllCommands,
-                    vk::PipelineStageFlagBits::eColorAttachmentOutput,                 // Enable color attachment writes
-                    vk::DependencyFlagBits::eByRegion,
-                    nullptr, nullptr, barrier
+                    srcStage, vk::PipelineStageFlagBits::eFragmentShader,
+                    vk::DependencyFlagBits::eByRegion, {}, {}, { barrier }
                 );
             }
 
-            // Pass Execution - Execute the Actual Rendering Logic. Call the user-provided rendering function with prepared command buffer
-            pass.executeFunc(commandBuffer);                                           // Execute pass-specific rendering
-
-            // Final Layout Transitions - Prepare Resources for Subsequent Use. Transition output resources to their final required layouts
+            // 2. Transition output resources to render target layouts
             for (const auto& output : pass.outputs) {
                 auto& resource = resources[output];
+                bool isDepth = (resource.name == "Depth");
+
+                // 🟩 FIXED: Dynamically route the proper layout types!
+                vk::ImageLayout targetLayout = isDepth ? vk::ImageLayout::eDepthStencilAttachmentOptimal : vk::ImageLayout::eColorAttachmentOptimal;
+                vk::AccessFlags targetAccess = isDepth ? vk::AccessFlagBits::eDepthStencilAttachmentWrite : vk::AccessFlagBits::eColorAttachmentWrite;
 
                 vk::ImageMemoryBarrier barrier;
-                barrier.setOldLayout(vk::ImageLayout::eColorAttachmentOptimal)         // Current writable layout
-                    .setNewLayout(resource.finalLayout)                             // Required final layout
+                barrier.setOldLayout(resource.initialLayout)
+                    .setNewLayout(targetLayout)
                     .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                     .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                     .setImage(*resource.image)
-                    .setSubresourceRange({ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 })
-                    .setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)    // Previous write operations
-                    .setDstAccessMask(vk::AccessFlagBits::eMemoryRead);             // Enable subsequent reads
+                    .setSubresourceRange({ (isDepth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor), 0, 1, 0, 1 })
+                    .setSrcAccessMask(vk::AccessFlagBits::eMemoryRead)
+                    .setDstAccessMask(targetAccess);
 
-                // Insert final barrier for layout transition
+                vk::PipelineStageFlags srcStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+                vk::PipelineStageFlags dstStage = isDepth ?
+                    vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests :
+                    vk::PipelineStageFlagBits::eColorAttachmentOutput;
+
                 commandBuffer.pipelineBarrier(
-                    vk::PipelineStageFlagBits::eColorAttachmentOutput,                 // After color writes complete
-                    vk::PipelineStageFlagBits::eAllCommands,                           // Before any subsequent work
-                    vk::DependencyFlagBits::eByRegion,
-                    nullptr, nullptr, barrier
+                    srcStage, dstStage, vk::DependencyFlagBits::eByRegion, {}, {}, { barrier }
                 );
             }
 
-            // Command Submission with Synchronization. Submit command buffer with appropriate dependency and signaling semaphores
-            commandBuffer.end();                                                       // Finalize command recording
+            // 3. Execute the pass lambda (GeometryPass / LightingPass)
+            pass.executeFunc(commandBuffer, imageIndex);
 
-            vk::SubmitInfo submitInfo;
-            submitInfo.setWaitSemaphoreCount(static_cast<uint32_t>(waitSemaphores.size()))      // Dependencies to wait for
-                .setPWaitSemaphores(waitSemaphores.data())                                 // Dependency semaphores
-                .setPWaitDstStageMask(waitStages.data())                                   // Pipeline stages to wait at
-                .setCommandBufferCount(1)                                                  // Single command buffer
-                .setPCommandBuffers(&*commandBuffer)                                      // Command buffer to execute
-                .setSignalSemaphoreCount(static_cast<uint32_t>(signalSemaphores.size()))  // Semaphores to signal
-                .setPSignalSemaphores(signalSemaphores.data());                           // Signal semaphores
+            // 4. Transition output resources to their final required layouts
+            for (const auto& output : pass.outputs) {
+                auto& resource = resources[output];
+                bool isDepth = (resource.name == "Depth");
 
-            queue.submit(1, &submitInfo, nullptr);                                              // Submit to GPU queue
+                vk::ImageLayout currentLayout = isDepth ? vk::ImageLayout::eDepthStencilAttachmentOptimal : vk::ImageLayout::eColorAttachmentOptimal;
+                vk::AccessFlags srcAccess = isDepth ? vk::AccessFlagBits::eDepthStencilAttachmentWrite : vk::AccessFlagBits::eColorAttachmentWrite;
+
+                vk::ImageMemoryBarrier barrier;
+                barrier.setOldLayout(currentLayout)
+                    .setNewLayout(resource.finalLayout)
+                    .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                    .setImage(*resource.image)
+                    .setSubresourceRange({ (isDepth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor), 0, 1, 0, 1 })
+                    .setSrcAccessMask(srcAccess)
+                    .setDstAccessMask(vk::AccessFlagBits::eMemoryRead);
+
+                vk::PipelineStageFlags srcStage = isDepth ?
+                    vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests :
+                    vk::PipelineStageFlagBits::eColorAttachmentOutput;
+
+                commandBuffer.pipelineBarrier(
+                    srcStage, vk::PipelineStageFlagBits::eAllCommands,
+                    vk::DependencyFlagBits::eByRegion, {}, {}, { barrier }
+                );
+            }
         }
     }
 
@@ -1040,19 +1308,19 @@ namespace Proto
         // Configure position buffer for world-space vertex positions
         // High precision format preserves positional accuracy for lighting calculations
         graph.AddResource("GBuffer_Position", vk::Format::eR16G16B16A16Sfloat, { width, height },
-            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment,
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment | vk::ImageUsageFlagBits::eSampled,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
 
         // Configure normal buffer for surface orientation data
         // High precision normals enable accurate lighting and reflection calculations
         graph.AddResource("GBuffer_Normal", vk::Format::eR16G16B16A16Sfloat, { width, height },
-            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment,
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment | vk::ImageUsageFlagBits::eSampled,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
 
         // Configure albedo buffer for surface color information
         // Standard 8-bit precision sufficient for color data with gamma encoding
         graph.AddResource("GBuffer_Albedo", vk::Format::eR8G8B8A8Unorm, { width, height },
-            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment,
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment | vk::ImageUsageFlagBits::eSampled,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
 
         // Configure depth buffer for occlusion and depth testing
@@ -1063,8 +1331,8 @@ namespace Proto
 
         // Configure final color buffer for the completed lighting result
         // Standard color format with transfer capability for presentation or post-processing
-        graph.AddResource("FinalColor", vk::Format::eR8G8B8A8Unorm, { width, height },
-            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc,
+        graph.AddResource("FinalColor", vk::Format::eB8G8R8A8Srgb, { width, height },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferSrcOptimal);
 
 
@@ -1073,7 +1341,7 @@ namespace Proto
         graph.AddPass("GeometryPass",
             {},                                                        // No input dependencies - first pass in pipeline
             { "GBuffer_Position", "GBuffer_Normal", "GBuffer_Albedo", "Depth" },  // Outputs all G-Buffer components
-            [&](vk::raii::CommandBuffer& cmd)
+            [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
             {
                 // 1. Fetch the compiled resource descriptors directly from your rendergraph map pointers
                 auto* posRes = graph.GetResource("GBuffer_Position");
@@ -1089,24 +1357,27 @@ namespace Proto
                     std::array<vk::RenderingAttachmentInfoKHR, 3> colorAttachments;
 
                     // Configure position attachment - world space vertex positions
-
+                    vk::ClearValue clearColor = vk::ClearColorValue(std::array<float, 4>{ 0.1f, 0.1f, 0.15f, 1.0f });
                     // Configure position attachment - Dereference the view handle safely using the * operator
                     colorAttachments[0].setImageView(*posRes->view)    // Target position buffer
                         .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)  // Optimal for writes
                         .setLoadOp(vk::AttachmentLoadOp::eClear)       // Clear to known state
-                        .setStoreOp(vk::AttachmentStoreOp::eStore);    // Preserve for lighting pass
+                        .setStoreOp(vk::AttachmentStoreOp::eStore)    // Preserve for lighting pass
+                        .setClearValue(clearColor);
 
                     // Configure normal attachment - surface normals in world space
                     colorAttachments[1].setImageView(*normalRes->view)      // Target normal buffer
                         .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
                         .setLoadOp(vk::AttachmentLoadOp::eClear)       // Clear to default normal
-                        .setStoreOp(vk::AttachmentStoreOp::eStore);    // Preserve for lighting
+                        .setStoreOp(vk::AttachmentStoreOp::eStore)    // Preserve for lighting
+                        .setClearValue(clearColor);
 
                     // Configure albedo attachment - surface color and material properties
                     colorAttachments[2].setImageView(*albedoRes->view)      // Target albedo buffer
                         .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
                         .setLoadOp(vk::AttachmentLoadOp::eClear)       // Clear to default color
-                        .setStoreOp(vk::AttachmentStoreOp::eStore);    // Preserve for lighting
+                        .setStoreOp(vk::AttachmentStoreOp::eStore)    // Preserve for lighting
+                        .setClearValue(clearColor);
 
                     // Configure depth attachment for occlusion culling
                     vk::RenderingAttachmentInfoKHR depthAttachment;
@@ -1114,13 +1385,13 @@ namespace Proto
                         .setImageLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal)  // Optimal for depth ops
                         .setLoadOp(vk::AttachmentLoadOp::eClear)           // Clear to far plane
                         .setStoreOp(vk::AttachmentStoreOp::eStore)         // Preserve for lighting pass
-                        .setClearValue(vk::ClearColorValue(std::array<float, 4>{0.1f, 0.1f, 0.15f, 1.0f}));                        // Clear to maximum depth
+                        .setClearValue(vk::ClearDepthStencilValue(1.0f, 0)); // Clean depth initialization                        // Clear to maximum depth
 
                     // Assemble complete rendering configuration
                     vk::RenderingInfoKHR renderingInfo;
                     renderingInfo.setRenderArea({ {0, 0}, {width, height} })          // Full screen rendering
                         .setLayerCount(1)                                   // Single layer rendering
-                        .setColorAttachmentCount(colorAttachments.size())  // Number of G-Buffer targets
+                        .setColorAttachmentCount(static_cast<uint32_t>(colorAttachments.size()))  // Number of G-Buffer targets
                         .setPColorAttachments(colorAttachments.data())     // G-Buffer attachment array
                         .setPDepthAttachment(&depthAttachment);            // Depth testing configuration
 
@@ -1130,6 +1401,17 @@ namespace Proto
                 // Bind geometry pipeline and render all scene objects
                 // Each draw call populates position, normal, and albedo for visible fragments
                 // ... (geometry rendering implementation would go here)
+                
+                // 🟩 VUID FIX: Apply dynamic state properties explicitly inside the open pass context!
+                float fWidth = static_cast<float>(width);
+                float fHeight = static_cast<float>(height);
+                cmd.setViewport(0, { vk::Viewport(0.0f, 0.0f, fWidth, fHeight, 0.0f, 1.0f) });
+                cmd.setScissor(0, { vk::Rect2D(vk::Offset2D(0, 0), vk::Extent2D{width, height}) });
+
+                 // LINK THE RAW GEOMETRY INSTRUCTION DRAWING LOOP HERE
+                auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                // Query visible objects tree and bind your compiled PBR shader stage
+                pbrRenderer.Render(Entity::GetActiveSceneEntities(), cmd, imageIndex);
 
                 cmd.endRendering();                                             // Complete G-Buffer population
             });
@@ -1139,7 +1421,7 @@ namespace Proto
         graph.AddPass("LightingPass",
             { "GBuffer_Position", "GBuffer_Normal", "GBuffer_Albedo", "Depth" },  // Read all G-Buffer components
             { "FinalColor" },                                            // Output final lit result
-            [&](vk::raii::CommandBuffer& cmd)
+            [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
             {
                 auto* finalRes = graph.GetResource("FinalColor");
                 // Configure single color output for final lighting result
@@ -1165,6 +1447,70 @@ namespace Proto
                 // Fragment shader reads G-Buffer textures and computes lighting for each pixel
                 // All scene lights are processed in a single screen-space pass
                 // ... (lighting calculation implementation would go here)
+                // 4. 🟩 LINK THE PROCEDURAL FULL-SCREEN COMPOSITION PASS SHADER HERE
+
+                 // 🟩 VUID FIX: Apply dynamic state properties explicitly for full-screen quad processing!
+                float fWidth = static_cast<float>(width);
+                float fHeight = static_cast<float>(height);
+                cmd.setViewport(0, { vk::Viewport(0.0f, 0.0f, fWidth, fHeight, 0.0f, 1.0f) });
+                cmd.setScissor(0, { vk::Rect2D(vk::Offset2D(0, 0), vk::Extent2D{width, height}) });
+
+                auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pbrRenderer.GetDeferredPipeline());
+
+                // Pass global engine uniform descriptor tracks 
+                //auto& lowLevelRenderer = VulkanRenderer::Get();
+                //uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
+                //cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pbrRenderer.GetDeferredPipelineLayout(), 0,
+                //    { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame] }, {});
+
+                auto* posRes = graph.GetResource("GBuffer_Position");
+                auto* normalRes = graph.GetResource("GBuffer_Normal");
+                auto* albedoRes = graph.GetResource("GBuffer_Albedo");
+
+                auto& lowLevelRenderer = VulkanRenderer::Get();
+                auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
+                uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
+
+                // 🟩 Allocate and write ONLY ONCE so the handle stays alive while the GPU executes!
+                if (!*pbrRenderer.m_DeferredGBufferSet) {
+                    vk::DescriptorSetLayout deferredLayout = pbrRenderer.GetDeferredSetLayout();
+                    vk::DescriptorSetAllocateInfo allocInfo{
+                        .descriptorPool = *lowLevelRenderer.vulkanCommandBuffer->descriptorPool,
+                        .descriptorSetCount = 1,
+                        .pSetLayouts = &deferredLayout
+                    };
+                    pbrRenderer.m_DeferredGBufferSet = std::move(logicalDevice.allocateDescriptorSets(allocInfo).front());
+
+                    vk::Sampler sampler = lowLevelRenderer.imGui->GetSampler();
+                    std::array<vk::DescriptorImageInfo, 3> imageInfos = {
+                        vk::DescriptorImageInfo{ sampler, *posRes->view,    vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ sampler, *normalRes->view, vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ sampler, *albedoRes->view, vk::ImageLayout::eShaderReadOnlyOptimal }
+                    };
+
+                    std::array<vk::WriteDescriptorSet, 3> writes;
+                    for (uint32_t b = 0; b < 3; ++b) {
+                        writes[b] = vk::WriteDescriptorSet{
+                            .dstSet = *pbrRenderer.m_DeferredGBufferSet,
+                            .dstBinding = b,
+                            .descriptorCount = 1,
+                            .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                            .pImageInfo = &imageInfos[b]
+                        };
+                    }
+                    logicalDevice.updateDescriptorSets(writes, {});
+                }
+
+                // Bind both persistent sets safely
+                std::array<vk::DescriptorSet, 2> sets = {
+                    *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame],
+                    *pbrRenderer.m_DeferredGBufferSet
+                };
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pbrRenderer.GetDeferredPipelineLayout(), 0, sets, {});
+
+                // Process full-screen procedural triangle composition draw(3)
+                cmd.draw(3, 1, 0, 0);
 
                 cmd.endRendering();                                             // Complete lighting calculations
             });
@@ -1174,27 +1520,72 @@ namespace Proto
         graph.Compile();
     }
 
+    uint32_t Rendergraph::FindMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties)
+    {
+        // Fetch the active low-level hardware device details via your central registry context
+        auto& renderer = VulkanRenderer::Get();
+        auto& physicalDevice = renderer.vulkanContext->GetDevice().physicalDevice;
+
+        // Query the physical hardware's available memory banks and properties
+        vk::PhysicalDeviceMemoryProperties memProperties = physicalDevice.getMemoryProperties();
+
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+            // 1. Check if the specific bit in the typeFilter is set for this memory type index
+            // 2. Check if the memory types flags match our requested hardware requirements (e.g. DeviceLocal)
+            if ((typeFilter & (1 << i)) &&
+                (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i; // 🟩 Return the exact matching type index found!
+            }
+        }
+
+        throw std::runtime_error("[FATAL MEMORY ERROR]: Failed to discover a compatible hardware memory type index for G-Buffer targets!");
+    }
+
+    RenderTarget::RenderTarget(uint32_t w, uint32_t h, vk::raii::Device& dev) : width(w), height(h), m_ContextDevice(dev)
+    {
+        // Create color and depth images
+        CreateColorResources();
+        CreateDepthResources();
+
+        // Note: With dynamic rendering, we don't need to create VkRenderPass
+        // or VkFramebuffer objects. Instead, we just create the images and
+        // image views that will be used directly with vkCmdBeginRendering.
+    }
+
     void RenderTarget::CreateColorResources()
     {
-        // Implementation to create color image, memory, and view
-        // With dynamic rendering, we just need to create the image and image view
-        // that will be used with vkCmdBeginRendering
-        // ...
         auto& renderer = VulkanRenderer::Get();
         auto* imgUtil = renderer.GetVulkanImageSubsystem();
 
-        vk::Format format = vk::Format::eR16G16B16A16Sfloat; // High precision for G-Buffer data
+        vk::Format hdrFormat = vk::Format::eR16G16B16A16Sfloat; // High precision for spatial data vectors
+        vk::Format srgbFormat = vk::Format::eR8G8B8A8Unorm;    // Color format
 
-        auto [img, mem] = imgUtil->CreateImage(
-            width, height, 1, vk::SampleCountFlagBits::e1, format,
-            vk::ImageTiling::eOptimal,
-            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+        // 1. Allocate Position Target
+        auto [posImg, posMem] = imgUtil->CreateImage(
+            width, height, 1, vk::SampleCountFlagBits::e1, hdrFormat,
+            vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
             vk::MemoryPropertyFlagBits::eDeviceLocal
         );
-        colorImage = std::move(img);
-        colorMemory = std::move(mem);
+        positionImage = std::move(posImg); positionMemory = std::move(posMem);
+        positionImageView = imgUtil->CreateImageView(*positionImage, hdrFormat, vk::ImageAspectFlagBits::eColor, 1);
 
-        colorImageView = imgUtil->CreateImageView(*colorImage, format, vk::ImageAspectFlagBits::eColor, 1);
+        // 2. Allocate Normal Target
+        auto [normImg, normMem] = imgUtil->CreateImage(
+            width, height, 1, vk::SampleCountFlagBits::e1, hdrFormat,
+            vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::MemoryPropertyFlagBits::eDeviceLocal
+        );
+        normalImage = std::move(normImg); normalMemory = std::move(normMem);
+        normalImageView = imgUtil->CreateImageView(*normalImage, hdrFormat, vk::ImageAspectFlagBits::eColor, 1);
+
+        // 3. Allocate Albedo Target
+        auto [albedoImg, albedoMem] = imgUtil->CreateImage(
+            width, height, 1, vk::SampleCountFlagBits::e1, srgbFormat,
+            vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::MemoryPropertyFlagBits::eDeviceLocal
+        );
+        albedoImage = std::move(albedoImg); albedoMemory = std::move(albedoMem);
+        albedoImageView = imgUtil->CreateImageView(*albedoImage, srgbFormat, vk::ImageAspectFlagBits::eColor, 1);
     }
 
     void RenderTarget::CreateDepthResources()
@@ -1224,12 +1615,12 @@ namespace Proto
         dependencies.push_back(dependency);
     }
 
-    void RenderPass::Execute(vk::raii::CommandBuffer& commandBuffer)
+    void RenderPass::Execute(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex)
     {
         if (!enabled) return;
 
-        BeginPass(commandBuffer);
-        Render(commandBuffer);
+        BeginPass(commandBuffer, imageIndex);
+        Render(commandBuffer, imageIndex);
         EndPass(commandBuffer);
     }
 
@@ -1251,7 +1642,7 @@ namespace Proto
         }
     }
 
-    void RenderPassManager::Execute(vk::raii::CommandBuffer& commandBuffer)
+    void RenderPassManager::Execute(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex)
     {
         if (dirty) {
             SortPasses();
@@ -1259,7 +1650,7 @@ namespace Proto
         }
 
         for (auto pass : sortedPasses) {
-            pass->Execute(commandBuffer);
+            pass->Execute(commandBuffer, imageIndex);
         }
     }
 
@@ -1326,14 +1717,14 @@ namespace Proto
         }
     }
 
-    void PostProcessPass::BeginPass(vk::raii::CommandBuffer& commandBuffer)
+    void PostProcessPass::BeginPass(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex)
     {
         // Begin rendering with dynamic rendering
         vk::RenderingInfoKHR renderingInfo;
 
         // Set up color attachment for the post-processing pass
         vk::RenderingAttachmentInfoKHR colorAttachment;
-        colorAttachment.setImageView(GetRenderTarget()->GetColorImageView())
+        colorAttachment.setImageView(GetRenderTarget()->GetAlbedoImageView())
             .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
             .setLoadOp(vk::AttachmentLoadOp::eClear)
             .setStoreOp(vk::AttachmentStoreOp::eStore)
@@ -1349,7 +1740,7 @@ namespace Proto
         commandBuffer.beginRendering(renderingInfo);
     }
 
-    void PostProcessPass::Render(vk::raii::CommandBuffer& commandBuffer)
+    void PostProcessPass::Render(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex)
     {
         // With dynamic rendering, each effect can set up its own rendering state
         // and access input textures directly as shader resources

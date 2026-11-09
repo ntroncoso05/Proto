@@ -29,6 +29,8 @@ import vulkan_hpp;
 namespace Proto
 {
 	class RenderPassManager;
+	class SceneRenderer;
+	class Rendergraph;
 
 	class VulkanRenderer : public RendererAPI
 	{
@@ -74,6 +76,10 @@ namespace Proto
 
 		std::unique_ptr< WindowsWindow>windows;
 		std::unique_ptr<RenderPassManager> m_RenderPassManager;
+		std::unique_ptr<SceneRenderer> m_3DRenderer;
+		std::unique_ptr<Rendergraph> m_Rendergraph;
+
+		void RecreateRendergraph();
 	public:
 		// Expose a clean, directly bound tracking pointer
 		static VulkanRenderer* s_VulkanInstance;
@@ -83,6 +89,9 @@ namespace Proto
 		inline VulkanCommandBuffer* GetCommandBuffer() { return vulkanCommandBuffer; }
 		inline VulkanImage* GetVulkanImageSubsystem() { return vulkanImage; }
 		inline vk::raii::Device& GetLogicalDevice() { return vulkanContext->GetDevice().logicalDevice; }
+
+		inline RenderPassManager* GetRenderPassManager() { return m_RenderPassManager.get(); }
+		inline Rendergraph* GetRendergraph() { return m_Rendergraph.get(); }
 	};
 
 }

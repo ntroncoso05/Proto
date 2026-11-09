@@ -73,7 +73,7 @@ namespace Proto
             std::string name;                     // Descriptive name for debugging and profiling
             std::vector<std::string> inputs;      // Resources this pass reads from (dependencies)
             std::vector<std::string> outputs;     // Resources this pass writes to (products)
-            std::function<void(vk::raii::CommandBuffer&)> executeFunc;  // The actual rendering code
+            std::function<void(vk::raii::CommandBuffer&, uint32_t)> executeFunc;  // The actual rendering code
         };
 
         // Core data storage for the rendergraph system
@@ -83,12 +83,22 @@ namespace Proto
 
         // Automatic synchronization management
         // These objects ensure correct GPU execution order without manual barriers
-        std::vector<vk::raii::Semaphore> semaphores;          // GPU synchronization primitives
-        std::vector<std::pair<size_t, size_t>> semaphoreSignalWaitPairs;  // (signaling pass, waiting pass)
+        //std::vector<vk::raii::Semaphore> semaphores;          // GPU synchronization primitives
+        //std::vector<std::pair<size_t, size_t>> semaphoreSignalWaitPairs;  // (signaling pass, waiting pass)
 
         vk::raii::Device& device;  // Vulkan device for resource creation
 
     public:
+        const Pass* GetPass(const std::string& passName) const
+        {
+            for (const auto& pass : passes) {
+                if (pass.name == passName) {
+                    return &pass;
+                }
+            }
+            return nullptr;
+        }
+
         explicit Rendergraph(vk::raii::Device& dev) : device(dev) {}
 
         // Resource registration interface for declaring all resources used during rendering. This method establishes resource metadata without creating actual GPU resources
@@ -100,7 +110,7 @@ namespace Proto
         void AddPass(const std::string& name,
             const std::vector<std::string>& inputs,
             const std::vector<std::string>& outputs,
-            std::function<void(vk::raii::CommandBuffer&)> executeFunc);
+            std::function<void(vk::raii::CommandBuffer&, uint32_t)> executeFunc);
 
         // Rendergraph compilation - transforms declarative descriptions into executable pipeline. This method performs dependency analysis, resource allocation, and execution planning
         void Compile();
@@ -112,13 +122,14 @@ namespace Proto
         }
 
         // Rendergraph execution engine - coordinates pass execution with automatic synchronization. This method transforms the compiled rendergraph into actual GPU work
-        void Execute(vk::raii::CommandBuffer& commandBuffer, vk::Queue queue);
+        void Execute(vk::raii::CommandBuffer& commandBuffer, vk::Queue queue, uint32_t imageIndex);
+
+        // Comprehensive deferred renderer setup demonstrating rendergraph resource management
+        // This implementation shows how to efficiently organize multi-pass rendering workflows
+        void SetupDeferredRenderer(Rendergraph& graph, uint32_t width, uint32_t height);
     private:
         //TODO: Implementation(Implemented elsewhere)
-        uint32_t FindMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
-            // Implementation to find suitable memory type
-            return 0; // Placeholder
-        }
+        uint32_t FindMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
 
         // Comprehensive image layout transition implementation. This function demonstrates proper synchronization and layout management in Vulkan
         void TransitionImageLayout(vk::raii::CommandBuffer& commandBuffer,
@@ -126,40 +137,47 @@ namespace Proto
             vk::Format format,
             vk::ImageLayout oldLayout,
             vk::ImageLayout newLayout);
-
-        // Comprehensive deferred renderer setup demonstrating rendergraph resource management
-        // This implementation shows how to efficiently organize multi-pass rendering workflows
-        void SetupDeferredRenderer(Rendergraph& graph, uint32_t width, uint32_t height);
     };
 
     // Render target class
     class RenderTarget {
     private:
-        vk::raii::Image colorImage{ nullptr };
-        vk::raii::DeviceMemory colorMemory{ nullptr };
-        vk::raii::ImageView colorImageView{ nullptr };
+        // Position MRT Target
+        vk::raii::Image        positionImage{ nullptr };
+        vk::raii::DeviceMemory positionMemory{ nullptr };
+        vk::raii::ImageView    positionImageView{ nullptr };
 
-        vk::raii::Image depthImage{ nullptr };
+        // Normal MRT Target
+        vk::raii::Image        normalImage{ nullptr };
+        vk::raii::DeviceMemory normalMemory{ nullptr };
+        vk::raii::ImageView    normalImageView{ nullptr };
+
+        // Albedo Target (Standard gamma format)
+        vk::raii::Image        albedoImage{ nullptr };
+        vk::raii::DeviceMemory albedoMemory{ nullptr };
+        vk::raii::ImageView    albedoImageView{ nullptr };
+
+        vk::raii::Image        depthImage{ nullptr };
         vk::raii::DeviceMemory depthMemory{ nullptr };
-        vk::raii::ImageView depthImageView{ nullptr };
+        vk::raii::ImageView    depthImageView{ nullptr };
 
         uint32_t width;
         uint32_t height;
 
+        vk::raii::Device& m_ContextDevice; // Keep a persistent reference to your valid hardware context!
     public:
-        RenderTarget(uint32_t w, uint32_t h) : width(w), height(h) {
-            // Create color and depth images
-            CreateColorResources();
-            CreateDepthResources();
-
-            // Note: With dynamic rendering, we don't need to create VkRenderPass
-            // or VkFramebuffer objects. Instead, we just create the images and
-            // image views that will be used directly with vkCmdBeginRendering.
-        }
+        RenderTarget(uint32_t w, uint32_t h, vk::raii::Device& dev);
 
         // No need for explicit destructor with RAII objects
+        // Updated getters to expose all attachments cleanly to your passes
+        vk::Image GetPositionImage() const { return *positionImage; }
+        vk::Image GetNormalImage() const { return *normalImage; }
+        vk::Image GetAlbedoImage() const { return *albedoImage; }
+        vk::Image GetDepthImage() const { return *depthImage; }
 
-        vk::ImageView GetColorImageView() const { return *colorImageView; }
+        vk::ImageView GetPositionImageView() const { return *positionImageView; }
+        vk::ImageView GetNormalImageView() const { return *normalImageView; }
+        vk::ImageView GetAlbedoImageView() const { return *albedoImageView; }
         vk::ImageView GetDepthImageView() const { return *depthImageView; }
 
         uint32_t GetWidth() const { return width; }
@@ -167,15 +185,9 @@ namespace Proto
 
     private:
         void CreateColorResources();
-
         void CreateDepthResources();
 
-        vk::raii::Device& GetDevice() {
-            // Get device from somewhere (e.g., singleton or parameter)
-            // ...
-            static vk::raii::Device device = nullptr; // Placeholder
-            return device;
-        }
+        vk::raii::Device& GetDevice() { return m_ContextDevice; }
     };
 
     // Base render pass class
@@ -214,12 +226,12 @@ namespace Proto
             return enabled;
         }
 
-        virtual void Execute(vk::raii::CommandBuffer& commandBuffer);
+        virtual void Execute(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex);
 
     protected:
         // With dynamic rendering, BeginPass typically calls vkCmdBeginRendering, instead of vkCmdBeginRenderPass
-        virtual void BeginPass(vk::raii::CommandBuffer& commandBuffer) = 0;
-        virtual void Render(vk::raii::CommandBuffer& commandBuffer) = 0;
+        virtual void BeginPass(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) = 0;
+        virtual void Render(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) = 0;
         // With dynamic rendering, EndPass typically calls vkCmdEndRendering, instead of vkCmdEndRenderPass
         virtual void EndPass(vk::raii::CommandBuffer& commandBuffer) = 0;
     };
@@ -259,7 +271,7 @@ namespace Proto
 
         void RemoveRenderPass(const std::string& name);
 
-        void Execute(vk::raii::CommandBuffer& commandBuffer);
+        void Execute(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex);
 
     private:
         void SortPasses();
@@ -269,24 +281,21 @@ namespace Proto
             std::unordered_set<std::string>& visited, std::unordered_set<std::string>& visiting);
     };
 
+    class SceneRenderer;
     // Geometry pass for deferred rendering
     class GeometryPass : public RenderPass {
     private:
         CullingSystem* cullingSystem;
-
         // G-buffer textures
         RenderTarget* gBuffer;
-
+        SceneRenderer* sceneRenderer; // Added tracking pointer reference context!
     public:
-        GeometryPass(const std::string& name, CullingSystem* culling);
-
+        GeometryPass(const std::string& name, CullingSystem* culling, SceneRenderer* renderer);
         ~GeometryPass() override;
-
+        inline RenderTarget* GetGBufferTarget() const { return gBuffer; }
     protected:
-        void BeginPass(vk::raii::CommandBuffer& commandBuffer) override;
-
-        void Render(vk::raii::CommandBuffer& commandBuffer) override;
-
+        void BeginPass(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) override;
+        void Render(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) override;
         void EndPass(vk::raii::CommandBuffer& commandBuffer) override;
     };
 
@@ -304,7 +313,7 @@ namespace Proto
         //void AddLight(Light* light) {
         //    lights.push_back(light);
         //}
-
+        //
         //void RemoveLight(Light* light) {
         //    auto it = std::find(lights.begin(), lights.end(), light);
         //    if (it != lights.end()) {
@@ -313,10 +322,8 @@ namespace Proto
         //}
 
     protected:
-        virtual void BeginPass(vk::raii::CommandBuffer& commandBuffer) override;
-
-        void Render(vk::raii::CommandBuffer& commandBuffer) override;
-
+        virtual void BeginPass(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) override;
+        void Render(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) override;
         void EndPass(vk::raii::CommandBuffer& commandBuffer) override;
     };
 
@@ -341,8 +348,8 @@ namespace Proto
         void RemoveEffect(PostProcessEffect* effect);
 
     protected:
-        void BeginPass(vk::raii::CommandBuffer& commandBuffer) override;
-        void Render(vk::raii::CommandBuffer& commandBuffer) override;
+        void BeginPass(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) override;
+        void Render(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) override;
         void EndPass(vk::raii::CommandBuffer& commandBuffer) override;
     };
 
@@ -365,14 +372,16 @@ namespace Proto
     class SceneRenderer {
         // GRANT THE LIGHTING PASS PERMISSION TO READ ALL PRIVATE FIELDS
         friend class LightingPass;
+        friend class GeometryPass;
     private:
         // --- ADD THESE MISSING STRUCTURAL MEMBER VARIABLES ---
-        vk::raii::Device device = nullptr; // Raw logical device context link
-        vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
-        vk::raii::PipelineLayout pbrPipelineLayout = nullptr;
-        vk::raii::Pipeline pbrPipeline = nullptr;
+        vk::raii::Device& device; // Raw logical device context link
+        vk::raii::DescriptorSetLayout descriptorSetLayout{ nullptr };
+        vk::raii::PipelineLayout pbrPipelineLayout{ nullptr };
+        vk::raii::Pipeline pbrPipeline{ nullptr };
 
         vk::Format swapChainImageFormat = vk::Format::eB8G8R8A8Srgb;
+        vk::Format gBufferColorFormat = vk::Format::eR16G16B16A16Sfloat; // Keep synchronized!
         vk::Extent2D swapChainExtent = vk::Extent2D{ 1280, 720 };
 
         // Buffer array structures tracker collections
@@ -395,16 +404,20 @@ namespace Proto
         vk::raii::Semaphore imageAvailableSemaphore = nullptr;
         vk::raii::Semaphore renderFinishedSemaphore = nullptr;
 
-        // Internal format utility fallback lookup
-        vk::Format findDepthFormat();
+        // Tracking sizes to handle window resizing cleanly
+        uint32_t m_DepthWidth = 0;
+        uint32_t m_DepthHeight = 0;
+
+        // Deferred Composition Pipeline resources (for LightingPass)
+        vk::raii::PipelineLayout m_DeferredPipelineLayout{ nullptr };
+        vk::raii::Pipeline       m_DeferredPipeline{ nullptr };
+        vk::raii::DescriptorSetLayout m_DeferredSetLayout{ nullptr };
     public:
         SceneRenderer() = default;
         SceneRenderer(vk::raii::Device& dev, vk::Queue queue);
 
         // No need for explicit destructor with RAII objects
-
         void SetCamera(Camera* camera) { cullingSystem.SetCamera(camera); }
-
         void Render(const std::vector<Entity*>& entities, vk::raii::CommandBuffer& activeCmdBuffer, uint32_t imageIndex);
 
         bool CreatePBRPipeline();
@@ -412,8 +425,19 @@ namespace Proto
         void pushMaterialProperties(vk::CommandBuffer commandBuffer, const Model* model, uint32_t materialIndex, const glm::mat4& globalMatrix);
         void RenderModelNode(Node* node, const glm::mat4& parentMatrix, vk::raii::CommandBuffer& cmd, const Model* model, CameraComponent* camera);
         inline vk::DescriptorSetLayout GetPBRDescriptorSetLayout() const { return *descriptorSetLayout; }
+
+        // Public getter hook so LightingPass can bind it
+        vk::Pipeline GetDeferredPipeline() const { return *m_DeferredPipeline; }
+        vk::PipelineLayout GetDeferredPipelineLayout() const { return *m_DeferredPipelineLayout; }
+
+        vk::DescriptorSetLayout GetDeferredSetLayout() const { return *m_DeferredSetLayout; }
+
+        bool CreateDeferredLightingPipeline();
+        vk::raii::DescriptorSet m_DeferredGBufferSet{ nullptr };
     private:
         void SetupRenderPasses();
+        // Internal format utility fallback lookup
+        vk::Format findDepthFormat();
     };
 
 }

@@ -49,7 +49,46 @@ namespace Proto
 		// make sure to transfer ownership or store this handle cleanly within your layer contexts!
 		imGui->init(vulkanSwapChain->swapChainExtent.width, vulkanSwapChain->swapChainExtent.height);
 		imGui->initResources(); // No renderPass needed with dynamic rendering
+
+		// FIX 1: FORCE IMGUI TO COMPILE ITS TEXTURE ATLASES AND UPLOAD TO THE GPU IMMEDIATELY!
+		// This executes updateTexture() safely inside a pre-warmed boot timeline, 
+		// guaranteeing that no mid-render staging submissions collide with your frames.
+		//ImGuiIO& io = ImGui::GetIO();
+		//unsigned char* pixels;
+		//int width, height;
+		//io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height); // Forces font pixel extraction
+		//
+		//ImTextureData fontTextureData{};
+		//fontTextureData.Width = width;
+		//fontTextureData.Height = height;
+		//fontTextureData.Pixels = pixels;
+		//fontTextureData.BytesPerPixel = 4;
+		//fontTextureData.Status = ImTextureStatus_WantCreate;
+		//
+		//imGui->updateTexture(&fontTextureData); // Safe boot-stage execution!
+		//std::cout << "[ENGINE SUCCESS]: ImGui font textures uploaded safely at boot time." << std::endl;
 	}
+
+	void VulkanRenderer::RecreateRendergraph()
+	{
+		uint32_t width = vulkanSwapChain->swapChainExtent.width;
+		uint32_t height = vulkanSwapChain->swapChainExtent.height;
+
+		if (width == 0 || height == 0) return;
+
+		// Wait for GPU to finish using old rendergraph images before destroying them
+		vulkanContext->GetDevice().logicalDevice.waitIdle();
+
+		// Reset the persistent G-Buffer descriptor set so LightingPass updates it with the new views
+		if (m_3DRenderer) {
+			m_3DRenderer->m_DeferredGBufferSet = nullptr;
+		}
+
+		// Rebuild the rendergraph at the new window resolution
+		m_Rendergraph = std::make_unique<Rendergraph>(GetLogicalDevice());
+		m_Rendergraph->SetupDeferredRenderer(*m_Rendergraph, width, height);
+	}
+
 	VulkanRenderer::VulkanRenderer()
 	{
 		s_VulkanInstance = this; // Bind instance handle immediately on creation
@@ -103,7 +142,6 @@ namespace Proto
 		auto pipelineAlloc = std::make_unique<VulkanPipeline>();
 		ServiceLocator::Register<VulkanPipeline>(pipelineAlloc.get());
 		vulkanPipeline = pipelineAlloc.release();
-
 		// Finish building drivers
 		initVulkan();
 		initImGui();
@@ -114,7 +152,7 @@ namespace Proto
 	{
 		vulkanSwapChain->CreateImageViews();
 		vulkanCommandBuffer->CreateDescriptorSetLayout();
-		vulkanPipeline->createGraphicsPipeline();
+		//vulkanPipeline->createGraphicsPipeline();
 		vulkanCommandBuffer->CreateCommandPool();
 		vulkanImage->CreateColorResources();
 		vulkanImage->CreateDepthResources();
@@ -127,6 +165,22 @@ namespace Proto
 		}
 		vulkanCommandBuffer->CreateCommandBuffers();
 		createSyncObjects();
+
+		// OVERRIDE GRAPH EXECUTION LAMBDAS TO CALL ENGINE LOGIC
+		// We override the template blocks inside SetupDeferredRenderer to hook straight into your actual SceneRenderer drawing loops!
+		//auto* geoPassNode = m_Rendergraph->GetPass("GeometryPass"); // Assuming you expose a lookup helper or pull from a map
+		// Alternatively, update the exact function mapping inside SetupDeferredRenderer directly:
+		m_3DRenderer = std::make_unique<SceneRenderer>(vulkanContext->GetDevice().logicalDevice, vulkanContext->GetDevice().graphicsQueue);
+		ServiceLocator::Register<SceneRenderer>(m_3DRenderer.get());
+
+		// INITIALIZE THE SYSTEM RENDERGRAPH CONTEXT. Note: We leave it uncompiled until resources are cleanly declared during initVulkan
+		m_Rendergraph = std::make_unique<Rendergraph>(GetLogicalDevice());
+
+		// REGISTER DEFERRED MRT ATTACHMENTS AND PASSTHROUGH LAMBDAS TO THE GRAPH ENGINE
+		uint32_t width = vulkanSwapChain->swapChainExtent.width;
+		uint32_t height = vulkanSwapChain->swapChainExtent.height;
+		// Configures GBuffer_Position, GBuffer_Normal, GBuffer_Albedo, Depth, and FinalColor maps automatically
+		m_Rendergraph->SetupDeferredRenderer(*m_Rendergraph, width, height);
 	}
 
 	void VulkanRenderer::createSyncObjects()
@@ -160,6 +214,7 @@ namespace Proto
 		{
 			vulkanContext->framebufferResized = false;
 			swapChain.RecreateSwapChain();
+			RecreateRendergraph();
 			return;
 		}
 
@@ -171,6 +226,7 @@ namespace Proto
 		if (result == vk::Result::eErrorOutOfDateKHR)
 		{
 			swapChain.RecreateSwapChain();
+			RecreateRendergraph();
 			return;
 		}
 
@@ -187,19 +243,78 @@ namespace Proto
 		imGui->drawGUI(camera);
 		imGui->updateBuffers();
 
-		auto& cmdBuffer = cmdSubsystem.commandBuffers[frameIdx];
-		cmdBuffer.reset();
-		cmdBuffer.begin({ .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
+		//auto& cmdBuffer = cmdSubsystem.commandBuffers[frameIdx];
+		//cmdBuffer.reset();
+		//cmdBuffer.begin({ .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
 
 		// SCENE HANDOFF VIA GLOBAL SERVICE LOCATOR
 		auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
 		pbrRenderer.SetCamera(&camera);
-		pbrRenderer.Render(Entity::GetActiveSceneEntities(), cmdBuffer, imageIndex);
+		//pbrRenderer.Render(Entity::GetActiveSceneEntities(), cmdBuffer, imageIndex);
+		//m_RenderPassManager->Execute(cmdBuffer, imageIndex);
+		// MASTER RECORDING INITIALIZATION
+		auto& frameCmdBuffer = cmdSubsystem.commandBuffers[frameIdx];
+		frameCmdBuffer.reset();
+		frameCmdBuffer.begin({ .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit }); // Open frame stream once
 
+		// EXECUTE THE COMPILED DAG ENGINE. This records resource transitions, geometries, lighting setups, and submissions automatically!
+		// 1. Execute the compiled DAG graph engine to populate G-Buffers and "FinalColor"
+		m_Rendergraph->Execute(frameCmdBuffer, device.graphicsQueue, frameIdx);
+
+		auto* finalColorResource = m_Rendergraph->GetResource("FinalColor");
+		if (finalColorResource)
+		{
+			vk::Image srcGraphImage = *finalColorResource->image;
+			vk::Image dstSwapchainImage = swapChain.swapChainImages[imageIndex];
+
+			// Transition swapchain layout to Transfer Destination state safely
+			vk::ImageMemoryBarrier barrierToBlit{
+				.srcAccessMask = vk::AccessFlagBits::eNone,
+				.dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+				.oldLayout = vk::ImageLayout::eUndefined,
+				.newLayout = vk::ImageLayout::eTransferDstOptimal,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.image = dstSwapchainImage,
+				.subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
+			};
+			frameCmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, { barrierToBlit });
+
+			vk::ImageBlit blitRegion{
+				.srcSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1 },
+				.srcOffsets = std::array<vk::Offset3D, 2>{
+					vk::Offset3D{0, 0, 0},
+					vk::Offset3D{ static_cast<int32_t>(finalColorResource->extent.width), static_cast<int32_t>(finalColorResource->extent.height), 1 }
+				},
+				.dstSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1 },
+				.dstOffsets = std::array<vk::Offset3D, 2>{
+					vk::Offset3D{0, 0, 0},
+					vk::Offset3D{ static_cast<int32_t>(swapChain.swapChainExtent.width), static_cast<int32_t>(swapChain.swapChainExtent.height), 1 }
+				}
+			};
+			frameCmdBuffer.blitImage(srcGraphImage, vk::ImageLayout::eTransferSrcOptimal, dstSwapchainImage, vk::ImageLayout::eTransferDstOptimal, { blitRegion }, vk::Filter::eLinear);
+
+			// Transition swapchain layout to Color Attachment state for ImGui overlay writing
+			vk::ImageMemoryBarrier barrierToUI{
+				.srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+				.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+				.oldLayout = vk::ImageLayout::eTransferDstOptimal,
+				.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+				.image = dstSwapchainImage,
+				.subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
+			};
+			frameCmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, { barrierToUI });
+		}
+		// SEPARATE IMGUI PIPELINE TIMELINE RECORDING:
+		// We allocate a secondary, fresh command buffer slice specifically for the UI overlay pass.
+		// This guarantees it never collides with or attempts to append to the finalized rendergraph buffer!
+		// Note: Adjust the pool lookup index or buffer mapping depending on how your container tracks allocations.
 		auto& uiPipeline = ServiceLocator::Get<ImGuiPipeline>();
-		uiPipeline.ExecuteFrame(cmdBuffer, imageIndex, imGui);
+		uiPipeline.ExecuteFrame(frameCmdBuffer, imageIndex, imGui);
 
-		cmdBuffer.end();
+		frameCmdBuffer.end();
 
 		vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
 		const vk::SubmitInfo submitInfo{
@@ -207,7 +322,7 @@ namespace Proto
 			.pWaitSemaphores = &*presentCompleteSemaphores[frameIdx],
 			.pWaitDstStageMask = &waitDestinationStageMask,
 			.commandBufferCount = 1,
-			.pCommandBuffers = &*cmdBuffer,
+			.pCommandBuffers = &*frameCmdBuffer, // Unified, dependency-safe command stream submission
 			.signalSemaphoreCount = 1,
 			.pSignalSemaphores = &*renderFinishedSemaphores[imageIndex]
 		};
@@ -226,6 +341,7 @@ namespace Proto
 		if ((result == vk::Result::eSuboptimalKHR) || (result == vk::Result::eErrorOutOfDateKHR))
 		{
 			swapChain.RecreateSwapChain();
+			RecreateRendergraph();
 		}
 		else
 		{

@@ -6,6 +6,7 @@
 #include "Platform/Vulkan/VK_Swapchain.hpp"
 #include "Platform/Vulkan/VK_ImageView.hpp"
 #include "Platform/Vulkan/VK_Image.hpp"
+#include "Platform/Vulkan/VK_Renderer.hpp"
 #include "Core/ServiceLocator.hpp"
 
 #include <GLFW/glfw3.h>
@@ -39,6 +40,30 @@ namespace Proto
 			[](const vk::PresentModeKHR value) { return vk::PresentModeKHR::eMailbox == value; }) ?
 			vk::PresentModeKHR::eMailbox :
 			vk::PresentModeKHR::eFifo;
+	}
+
+	void VulkanSwapChain::ReallocateDepthResources(uint32_t width, uint32_t height)
+	{
+		auto& renderer = VulkanRenderer::Get();
+		auto* imgUtil = renderer.GetVulkanImageSubsystem();
+
+		// Clear out old frames layouts safely
+		depthImageView = nullptr;
+		depthImageMemory = nullptr;
+		depthImage = nullptr;
+
+		vk::Format depthFormat = imgUtil->FindDepthFormat();
+
+		auto [img, mem] = imgUtil->CreateImage(
+			width, height, 1, vk::SampleCountFlagBits::e1, depthFormat,
+			vk::ImageTiling::eOptimal,
+			vk::ImageUsageFlagBits::eDepthStencilAttachment,
+			vk::MemoryPropertyFlagBits::eDeviceLocal
+		);
+
+		depthImage = std::move(img);
+		depthImageMemory = std::move(mem);
+		depthImageView = imgUtil->CreateImageView(*depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
 	}
 
 	vk::Extent2D VulkanSwapChain::ChooseSwapExtent(vk::SurfaceCapabilitiesKHR const& capabilities)
@@ -78,7 +103,7 @@ namespace Proto
 													   .imageColorSpace = swapChainSurfaceFormat.colorSpace,
 													   .imageExtent = swapChainExtent,
 													   .imageArrayLayers = 1,
-													   .imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
+													   .imageUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst,
 													   .imageSharingMode = vk::SharingMode::eExclusive,
 													   .preTransform = surfaceCapabilities.currentTransform,
 													   .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
@@ -127,5 +152,7 @@ namespace Proto
 		image.CreateSwapChainImageViews(swapChainImageViews, swapChainImages, swapChainSurfaceFormat.format);
 		image.CreateColorResources();
 		image.CreateDepthResources();
+
+		ReallocateDepthResources(swapChainExtent.width, swapChainExtent.height);
 	}
 }
