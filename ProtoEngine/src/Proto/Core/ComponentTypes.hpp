@@ -7,6 +7,10 @@ namespace Proto
 {
     // 3D Axis-Aligned Bounding Box
     struct BoundingBox {
+
+        BoundingBox() = default;
+        BoundingBox(const glm::vec3& minB, const glm::vec3& maxB) : minBound(minB), maxBound(maxB) {}
+
         glm::vec3 minBound = glm::vec3(-1.0f);
         glm::vec3 maxBound = glm::vec3(1.0f);
 
@@ -105,9 +109,7 @@ namespace Proto
     // Manages the visual representation of an entity by handling its 3D mesh and material
     class MeshComponent : public Component {
     private:
-        //Mesh* m_Mesh = nullptr;
         ResourceHandle<Mesh> m_MeshHandle;
-        //Material* material = nullptr;
 
     public:
         MeshComponent() = default;
@@ -147,7 +149,6 @@ namespace Proto
 
         virtual ~MeshComponent() override = default;
 
-        //virtual void Render() override;
         void Render();
 
         BoundingBox GetBoundingBox();
@@ -161,14 +162,66 @@ namespace Proto
         virtual void OnEvent(Event& event) override;
     };
 
+    struct Plane {
+        glm::vec3 normal{ 0.0f, 1.0f, 0.0f };
+        float distance = 0.0f;
+
+        void normalize() {
+            float len = glm::length(normal);
+            if (len > 0.0f) {
+                normal /= len;
+                distance /= len;
+            }
+        }
+    };
+
+    class Frustum {
+    public:
+        void update(const glm::mat4& viewProj) {
+            // Left Plane
+            m_Planes[0] = glm::vec4(viewProj[0][3] + viewProj[0][0], viewProj[1][3] + viewProj[1][0], viewProj[2][3] + viewProj[2][0], viewProj[3][3] + viewProj[3][0]);
+            // Right Plane
+            m_Planes[1] = glm::vec4(viewProj[0][3] - viewProj[0][0], viewProj[1][3] - viewProj[1][0], viewProj[2][3] - viewProj[2][0], viewProj[3][3] - viewProj[3][0]);
+            // Bottom Plane
+            m_Planes[2] = glm::vec4(viewProj[0][3] + viewProj[0][1], viewProj[1][3] + viewProj[1][1], viewProj[2][3] + viewProj[2][1], viewProj[3][3] + viewProj[3][1]);
+            // Top Plane
+            m_Planes[3] = glm::vec4(viewProj[0][3] - viewProj[0][1], viewProj[1][3] - viewProj[1][1], viewProj[2][3] - viewProj[2][1], viewProj[3][3] - viewProj[3][1]);
+            // Near Plane
+            m_Planes[4] = glm::vec4(viewProj[0][3] + viewProj[0][2], viewProj[1][3] + viewProj[1][2], viewProj[2][3] + viewProj[2][2], viewProj[3][3] + viewProj[3][2]);
+            // Far Plane
+            m_Planes[5] = glm::vec4(viewProj[0][3] - viewProj[0][2], viewProj[1][3] - viewProj[1][2], viewProj[2][3] - viewProj[2][2], viewProj[3][3] - viewProj[3][2]);
+
+            for (auto& plane : m_Planes) {
+                float len = glm::length(glm::vec3(plane));
+                if (len > 0.0f) plane /= len;
+            }
+        }
+
+        bool Intersects(const BoundingBox& box) const {
+            for (const auto& plane : m_Planes) {
+                glm::vec3 positiveVertex = box.minBound;
+                if (plane.x >= 0) positiveVertex.x = box.maxBound.x;
+                if (plane.y >= 0) positiveVertex.y = box.maxBound.y;
+                if (plane.z >= 0) positiveVertex.z = box.maxBound.z;
+                if (glm::dot(glm::vec3(plane), positiveVertex) + plane.w < 0.0f) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+    private:
+        std::array<glm::vec4, 6> m_Planes{};
+    };
+
     // Camera component
     // Defines a viewpoint for rendering the scene by managing view and projection matrices
     class CameraComponent : public Component {
     private:
-        float fieldOfView = 45.0f;
-        float aspectRatio = 16.0f / 9.0f;
+        float aspectRatio = 1280.0f / 720.0f;
+        float FOV = 45.0f;
         float nearPlane = 0.1f;
-        float farPlane = 1000.0f;
+        float farPlane = 100.0f;
 
         glm::mat4 viewMatrix = glm::mat4(1.0f);
         // mutable: GetProjectionMatrix() is logically const (it just returns a
@@ -178,13 +231,24 @@ namespace Proto
         mutable bool projectionDirty = true;
 
     public:
-        void SetPerspective(float fov, float aspect, float near, float far);
+        void SetPerspective(float fov, float aspect, float NearClip, float FarClip);
+        void SetAspectRatio(float aspect) { aspectRatio = aspect; projectionDirty = true; }
+        void SetFOV(float fov) { FOV = fov; projectionDirty = true; }
 
         glm::mat4 GetViewMatrix() const;
 
         glm::mat4 GetProjectionMatrix() const;
 
         glm::vec3 GetPosition() const;
+
+        float GetNearClip() const { return nearPlane; }
+        float GetFarClip() const { return farPlane; }
+        float GetFOV() const { return FOV; }
+
+        float MovementSpeed = 5.0f;
+        float MouseSensitivity = 0.1f;
+
+        Frustum GetFrustum() const { Frustum f; f.update(GetProjectionMatrix() * GetViewMatrix()); return f; }
     };
 
     class ModelComponent : public Component {
@@ -197,11 +261,81 @@ namespace Proto
         inline ResourceHandle<Model> GetModelHandle() const { return m_ModelHandle; }
     };
 
-    class LightComponent : public Component {
+    class AnimationComponent : public Component {
     public:
-        glm::vec3 color{ 1.0f, 1.0f, 1.0f };
-        float intensity = 1.0f;
-        float radius = 10.0f;
+        uint32_t ActiveClipIndex = 0;
+        float CurrentTime = 0.0f;
+        float PlaybackSpeed = 1.0f;
+        bool IsPlaying = true;
+        bool Loop = true;
     };
 
+    enum class LightType { Directional = 0, Point = 1, Spot = 2 };
+
+    class LightComponent : public Component {
+    public:
+        LightType Type = LightType::Directional;
+        glm::vec3 Color = glm::vec3(1.0f);
+        float Intensity = 3.0f;
+        float Radius = 15.0f;
+        float InnerConeAngle = 15.0f; // Degrees (for Spot)
+        float OuterConeAngle = 30.0f; // Degrees (for Spot)
+        bool CastShadows = true;
+    };
+
+    enum class BodyMotionType { Static = 0, Kinematic = 1, Dynamic = 2 };
+
+    class RigidBodyComponent : public Component {
+    public:
+        BodyMotionType MotionType = BodyMotionType::Dynamic;
+        float Mass = 1.0f;
+        float Friction = 0.5f;
+        float Restitution = 0.25f; // Bounciness [0.0, 1.0]
+        float LinearDamping = 0.05f;
+        float AngularDamping = 0.05f;
+        bool UseGravity = true;
+
+        // Runtime Jolt BodyID handle (uint32_t::max() = uninitialized)
+        uint32_t RuntimeBodyID = 0xFFFFFFFF;
+    };
+
+    class BoxColliderComponent : public Component {
+    public:
+        glm::vec3 HalfExtents = glm::vec3(0.5f);
+        glm::vec3 Offset = glm::vec3(0.0f);
+        bool IsTrigger = false;
+    };
+
+    class ParticleEmitterComponent : public Component {
+    public:
+        glm::vec3 Offset = glm::vec3(0.0f, 0.35f, 2.15f); // Local offset from entity pivot
+        glm::vec3 Direction = glm::vec3(0.0f, 0.35f, 1.0f);  // Local emission direction
+        glm::vec3 Color = glm::vec3(1.0f, 0.45f, 0.1f);  // Base RGB tint
+        float HDRIntensity = 4.0f;  // > 1.0 triggers HDR Bloom
+        float ParticleSize = 0.16f;
+        float InitialSpeed = 3.5f;
+        float Spread = 0.45f; // Cone spread [0.0, 1.0]
+        float Gravity = -6.5f;
+        float MinLife = 0.8f;
+        float MaxLife = 1.8f;
+        int   ActiveParticles = 2048;  // Spawn rate / active count (1..4096)
+        bool  Enabled = true;
+    };
+
+    struct MaterialOverride {
+        bool      Enabled = false;
+        glm::vec4 BaseColorFactor = glm::vec4(1.0f);
+        float     MetallicFactor = 0.0f;
+        float     RoughnessFactor = 0.5f;
+        float     ClearcoatFactor = 0.0f;
+        float     ClearcoatRoughness = 0.0f;
+        float     IridescenceFactor = 0.0f;
+        glm::vec3 EmissiveFactor = glm::vec3(0.0f);
+    };
+
+    class MaterialOverrideComponent : public Component {
+    public:
+        // Key = material index inside the entity's Model::materials vector
+        std::unordered_map<uint32_t, MaterialOverride> Overrides;
+    };
 }

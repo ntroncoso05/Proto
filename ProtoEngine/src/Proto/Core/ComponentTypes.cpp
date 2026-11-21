@@ -63,7 +63,7 @@ namespace Proto
 
     void MeshComponent::Render()
     {
-        // 1. LIFETIME GUARD: Verify the asset is valid and resident before drawing []
+        // LIFETIME GUARD: Verify the asset is valid and resident before drawing []
         if (!m_MeshHandle.IsValid()) return;
 
         // Extract the typed underlying resource safely from the registry []
@@ -73,32 +73,26 @@ namespace Proto
         // Looks up the baseline abstract interface cleanly!
         auto& rendererAPI = ServiceLocator::Get<RendererAPI>();
 
-        // 1. Fetch your global graphics device factory interfaces seamlessly through the Service Locator
+        // Fetch your global graphics device factory interfaces seamlessly through the Service Locator
         auto& renderer = static_cast<VulkanRenderer&>(rendererAPI);
         auto* cmdUtil = renderer.GetCommandBuffer();
         auto& swapChain = ServiceLocator::Get<VulkanSwapChain>();
 
-        // 1. Safe guard check: Ensure the parent container context is fully valid
+        // Safe guard check: Ensure the parent container context is fully valid
         Entity* parentEntity = GetOwner();
         if (!parentEntity) return;
 
         // Get transform component
-        // 2. Fetch the corresponding transform metrics from the scene hierarchy
+        // Fetch the corresponding transform metrics from the scene hierarchy
         auto transform = parentEntity->GetComponent<TransformComponent>();
         if (!transform) return;
-
-        // 3. Render mesh geometry using the active transform matrices
-        //Mesh* rawMesh = m_MeshHandle.Get();
-        
+    
         glm::mat4 absoluteWorldMatrix = transform->GetWorldTransformMatrix();
-        //glm::mat4 gltfConversion = glm::rotate(glm::mat4(1.0f), glm::radians(180.0f), glm::vec3(1.0f, 0.0f, 0.0f));
         glm::mat4 finalModelMatrix = absoluteWorldMatrix;
 
-        //auto& renderer = VulkanRenderer::Get();
         uint32_t currentFrame = swapChain.GetFrameIndex();
         vk::raii::CommandBuffer& cmd = cmdUtil->commandBuffers[currentFrame];
 
-        //Mesh* rawMesh = m_MeshHandle.Get();
         cmd.bindVertexBuffers(0, { *rawMesh->GetVertexBuffer() }, { 0 });
         cmd.bindIndexBuffer(*rawMesh->GetIndexBuffer(), 0, vk::IndexType::eUint32);
 
@@ -109,15 +103,15 @@ namespace Proto
     {
         BoundingBox box;
 
-        // 🟩 FIX 1: Check if the resource handle wrapper holds a valid, loaded mesh asset
+        // Check if the resource handle wrapper holds a valid, loaded mesh asset
         if (m_MeshHandle.IsValid() && m_MeshHandle->IsLoaded()) {
             glm::vec3 minBound(std::numeric_limits<float>::max());
             glm::vec3 maxBound(std::numeric_limits<float>::lowest());
 
-            // 🟩 FIX 2: Extract geometry from m_MeshHandle instead of the non-existent m_Meshes vector
+            // Extract geometry from m_MeshHandle instead of the non-existent m_Meshes vector
             Mesh* rawMesh = m_MeshHandle.Get();
 
-            // 🟩 FIX 3: Explicitly map the loop target container elements using Proto::Vertex type layouts
+            // Explicitly map the loop target container elements using Proto::Vertex type layouts
             for (const Proto::Vertex& vertex : rawMesh->GetRawVertices()) {
                 // glm::min/max expect two arguments of matching vector type profiles
                 minBound = glm::min(minBound, vertex.pos);
@@ -137,12 +131,13 @@ namespace Proto
     }
 
     // CAMERA
-    void CameraComponent::SetPerspective(float fov, float aspect, float near, float far)
+    void CameraComponent::SetPerspective(float fov, float aspect, float NearClip, float FarClip)
     {
-        fieldOfView = fov;
+        FOV = fov;
         aspectRatio = aspect;
-        nearPlane = 0.1f;
-        farPlane = 100.0f;
+        nearPlane = NearClip;
+        farPlane = FarClip;
+        projectionMatrix = glm::perspective(glm::radians(fov), aspect, NearClip, FarClip);
         projectionDirty = true;
     }
 
@@ -169,11 +164,12 @@ namespace Proto
     {
         if (projectionDirty) {
             projectionMatrix = glm::perspective(
-                glm::radians(fieldOfView),
+                glm::radians(FOV),
                 aspectRatio,
                 nearPlane,
                 farPlane
             );
+            projectionMatrix[1][1] *= -1.0f; // Single Vulkan NDC Y-flip for the entire engine
             projectionDirty = false;
         }
         return projectionMatrix;

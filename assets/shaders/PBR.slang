@@ -47,6 +47,8 @@ struct UniformBufferObject {
 struct PushConstants {
     float4x4 modelMatrix;               // Reads position instantly on the hardware per-draw!
     float4 baseColorFactor;             // Base color tint/multiplier
+    float4 emissiveFactor;              // xyz = color, w = strength
+    float4 coatAndIridescence;          // x = clearcoat, y = clearcoatRoughness, z = iridescence, w = iridescenceIor
     float metallicFactor;               // Metallic property multiplier
     float roughnessFactor;              // Surface roughness multiplier
     int baseColorTextureSet;            // Texture binding index for base color (-1 = none)
@@ -156,64 +158,36 @@ struct GBufferOutput {
     [[vk::location(0)]] float4 Position : SV_Target0; // GBuffer_Position
     [[vk::location(1)]] float4 Normal   : SV_Target1; // GBuffer_Normal
     [[vk::location(2)]] float4 Albedo   : SV_Target2; // GBuffer_Albedo
+    [[vk::location(3)]] float4 Emissive : SV_Target3; // GBuffer_Emissive
+    [[vk::location(4)]] float4 SurfaceExt : SV_Target4; // GBuffer_SurfaceExt (clearcoat, coatRoughness, iridescence, encodedIor)
 };
 
 // Fragment shader entry point - Executes once per pixel
-[[shader("fragment")]]
-GBufferOutput PSMain(VSOutput input) : SV_TARGET
+[shader("fragment")]
+GBufferOutput PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace)
 {
     GBufferOutput output;
 
-    // === MATERIAL PROPERTY SAMPLING ===
-    // Sample base color texture and apply material color factor
-    //float4 baseColor = baseColorMap.Sample(baseColorSampler, input.UV) * material.baseColorFactor;
+    // 1. Sample base color and apply material tint
     float4 baseColor = baseColorMap.Sample(input.UV) * material.baseColorFactor;
 
-    // Sample metallic-roughness texture (metallic=B channel, roughness=G channel)
-    // glTF standard: metallic stored in blue, roughness in green
-    //float2 metallicRoughness = metallicRoughnessMap.Sample(metallicRoughnessSampler, input.UV).bg;
+    // 2. Alpha cutout discard (grilles, vents, foliage, decals)
+    if (material.alphaMask > 0.5 && baseColor.a < material.alphaMaskCutoff) {
+        discard;
+    }
+
+    // 3. Sample metallic (B) and roughness (G)
     float2 metallicRoughness = metallicRoughnessMap.Sample(input.UV).bg;
     float metallic = metallicRoughness.x * material.metallicFactor;
     float roughness = metallicRoughness.y * material.roughnessFactor;
 
-    // Sample ambient occlusion (typically stored in red channel)
-    //float ao = occlusionMap.Sample(occlusionSampler, input.UV).r;
-    float ao = occlusionMap.Sample(input.UV).r;
+    // 4. Flip normal on back-faces of double-sided meshes
+    float3 N = normalize(input.Normal) * (isFrontFace ? 1.0 : -1.0);
 
-    // Sample emissive texture for self-illuminating materials
-    //float3 emissive = emissiveMap.Sample(emissiveSampler, input.UV).rgb;
-    float3 emissive = emissiveMap.Sample(input.UV).rgb;
-
-    // === NORMAL CALCULATION ===
-    // Start with interpolated surface normal
-    //float3 N = normalize(input.Normal);
-    //
-    //// Apply normal mapping if texture is available
-    //if (material.normalTextureSet >= 0) {
-    //    // Sample normal map and convert from [0,1] to [-1,1] range
-    //    //float3 tangentNormal = normalMap.Sample(normalSampler, input.UV).xyz * 2.0 - 1.0;
-    //    float3 tangentNormal = normalMap.Sample(input.UV).xyz * 2.0 - 1.0;
-    //
-    //    // Construct tangent-space to world-space transformation matrix (TBN)
-    //    float3 T = normalize(input.Tangent.xyz);              // Tangent
-    //    float3 B = normalize(cross(N, T)) * input.Tangent.w;  // Bitangent (w = handedness)
-    //    float3x3 TBN = float3x3(T, B, N);                     // Tangent-Bitangent-Normal matrix
-    //
-    //    // Transform normal from tangent space to world space
-    //    N = normalize(mul(tangentNormal, TBN));
-    //}
-
-    // === NORMAL CALCULATION ===
-    // Start with interpolated surface normal from the vertex stage
-    float3 N = normalize(input.Normal);
-
-    // Apply normal mapping if texture is available
+    // 5. Normal mapping using screen-space derivatives
     if (material.normalTextureSet >= 0) {
-        // Sample normal map and convert from [0,1] to [-1,1] range
         float3 tangentNormal = normalMap.Sample(input.UV).xyz * 2.0 - 1.0;
 
-        // 🟩 FIXED: Procedural TBN matrix calculation using partial derivatives!
-        // This completely eliminates the need for an input.Tangent field!
         float3 dp1 = ddx(input.WorldPos);
         float3 dp2 = ddy(input.WorldPos);
         float2 duv1 = ddx(input.UV);
@@ -224,96 +198,199 @@ GBufferOutput PSMain(VSOutput input) : SV_TARGET
         float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
         float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
 
-        float invmax = rsqrt(max(dot(T,T), dot(B,B)));
+        float invmax = rsqrt(max(dot(T, T), dot(B, B)) + 1e-6);
         float3x3 TBN = float3x3(T * invmax, B * invmax, N);
 
-        // Transform normal from tangent space to world space safely
         N = normalize(mul(tangentNormal, TBN));
     }
 
-    // === LIGHTING SETUP ===
-    // Calculate view direction (fragment to camera)
-    float3 V = normalize(ubo.camPos.xyz - input.WorldPos);
+    // Sample emissive texture only if assigned (prevents default_white from making everything glow!)
+    float3 emissiveTex = (material.emissiveTextureSet >= 0) ? emissiveMap.Sample(input.UV).rgb : float3(1.0);
+    float3 emissive = emissiveTex * material.emissiveFactor.rgb * material.emissiveFactor.w;
 
-    // Calculate reflection vector for environment mapping
-    float3 R = reflect(-V, N);
-
-    // === PBR MATERIAL SETUP ===
-    // Calculate F0 (reflectance at normal incidence)
-    // Non-metals: low reflectance (~0.04), Metals: colored reflectance from base color
-    float3 F0 = float3(0.04, 0.04, 0.04);  // Dielectric default
-    F0 = lerp(F0, baseColor.rgb, metallic); // Lerp to metallic behavior
-
-    // Initialize outgoing radiance accumulator
-    float3 Lo = float3(0.0, 0.0, 0.0);
-
-    // === DIRECT LIGHTING LOOP ===
-    // Calculate contribution from each light source
-    for (int i = 0; i < 4; i++) {
-        float3 lightPos = ubo.lightPositions[i].xyz;
-        float3 lightColor = ubo.lightColors[i].rgb;
-
-        // Calculate light direction and attenuation
-        float3 L = normalize(lightPos - input.WorldPos);      // Light direction
-        float distance = length(lightPos - input.WorldPos);   // Distance for falloff
-        float attenuation = 1.0 / (distance * distance);     // Inverse square falloff
-        float3 radiance = lightColor * attenuation;           // Attenuated light color
-
-        // Calculate half vector (between view and light directions)
-        float3 H = normalize(V + L);
-
-        // === BRDF EVALUATION ===
-        // Calculate all necessary dot products for BRDF terms
-        float NdotL = max(dot(N, L), 0.0);  // Lambertian falloff
-        float NdotV = max(dot(N, V), 0.0);  // View angle
-        float NdotH = max(dot(N, H), 0.0);  // Half vector for specular
-        float HdotV = max(dot(H, V), 0.0);  // For Fresnel calculation
-
-        // Evaluate Cook-Torrance BRDF components
-        float D = DistributionGGX(NdotH, roughness);    // Normal distribution
-        float G = GeometrySmith(NdotV, NdotL, roughness); // Geometry function
-        float3 F = FresnelSchlick(HdotV, F0);           // Fresnel reflectance
-
-        // Calculate specular BRDF
-        float3 numerator = D * G * F;
-        float denominator = 4.0 * NdotV * NdotL + 0.0001; // Prevent division by zero
-        float3 specular = numerator / denominator;
-
-        // === ENERGY CONSERVATION ===
-        // Fresnel term represents specular reflection ratio
-        float3 kS = F;                          // Specular contribution
-        float3 kD = float3(1.0, 1.0, 1.0) - kS; // Diffuse contribution (energy conservation)
-        kD *= 1.0 - metallic;                   // Metals have no diffuse reflection
-
-        // === RADIANCE ACCUMULATION ===
-        // Combine diffuse (Lambertian) and specular (Cook-Torrance) terms
-        // Multiply by incident radiance and cosine foreshortening
-        Lo += (kD * baseColor.rgb / PI + specular) * radiance * NdotL;
-    }
-
-    // === AMBIENT AND EMISSIVE ===
-    // Add simple ambient lighting (should be replaced with IBL in production)
-    //float3 ambient = float3(0.03, 0.03, 0.03) * baseColor.rgb * ao;
-    float3 ambientSkyColor = float3(0.12, 0.15, 0.20); 
-    float3 ambient = ambientSkyColor * baseColor.rgb * ao;
-
-    // Combine all lighting contributions
-    float3 color = ambient + Lo + emissive;
-
-    // === HDR TONE MAPPING AND GAMMA CORRECTION ===
-    // Apply Reinhard tone mapping to compress HDR values to [0,1] range
-    color = color / (color + float3(1.0, 1.0, 1.0));
-
-    // Apply gamma correction for sRGB display (inverse gamma)
-    color = pow(color, float3(1.0 / ubo.gamma, 1.0 / ubo.gamma, 1.0 / ubo.gamma));
-
-    // Output final color with original alpha
-    //return float4(color, baseColor.a);
-
-    // 2. PACK RAW ATTRIBUTES DIRECTLY TO THE G-BUFFER (No lighting calculations here!)
-    output.Position = float4(input.WorldPos, 1.0);
-    output.Normal   = float4(N, 1.0);
+    // 6. Pack G-Buffer targets
+    output.Position = float4(input.WorldPos, metallic);
+    output.Normal   = float4(N, roughness);
     output.Albedo   = baseColor;
+    output.Emissive = float4(emissive, 1.0);
+
+    float encodedIor = saturate((material.coatAndIridescence.w - 1.0) / 2.0); // Maps IOR [1.0, 3.0] -> [0.0, 1.0]
+    output.SurfaceExt = float4(
+        saturate(material.coatAndIridescence.x),
+        saturate(material.coatAndIridescence.y),
+        saturate(material.coatAndIridescence.z),
+        encodedIor
+    );
 
     return output;
 }
+
+
+//[[shader("fragment")]]
+//GBufferOutput PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
+//{
+//    GBufferOutput output;
+//
+//    // === MATERIAL PROPERTY SAMPLING ===
+//    // Sample base color texture and apply material color factor
+//    //float4 baseColor = baseColorMap.Sample(baseColorSampler, input.UV) * material.baseColorFactor;
+//    float4 baseColor = baseColorMap.Sample(input.UV) * material.baseColorFactor;
+//
+//    // Discard transparent cutout pixels (grilles, vents, foliage, decals)
+//    if (material.alphaMask > 0.5 && baseColor.a < material.alphaMaskCutoff) {
+//        discard;
+//    }
+//
+//    // Sample metallic-roughness texture (metallic=B channel, roughness=G channel)
+//    // glTF standard: metallic stored in blue, roughness in green
+//    //float2 metallicRoughness = metallicRoughnessMap.Sample(metallicRoughnessSampler, input.UV).bg;
+//    float2 metallicRoughness = metallicRoughnessMap.Sample(input.UV).bg;
+//    float metallic = metallicRoughness.x * material.metallicFactor;
+//    float roughness = metallicRoughness.y * material.roughnessFactor;
+//
+//    // Sample ambient occlusion (typically stored in red channel)
+//    //float ao = occlusionMap.Sample(occlusionSampler, input.UV).r;
+//    float ao = occlusionMap.Sample(input.UV).r;
+//
+//    // Sample emissive texture for self-illuminating materials
+//    //float3 emissive = emissiveMap.Sample(emissiveSampler, input.UV).rgb;
+//    float3 emissive = emissiveMap.Sample(input.UV).rgb;
+//
+//    // === NORMAL CALCULATION ===
+//    // Start with interpolated surface normal
+//    //float3 N = normalize(input.Normal);
+//    //
+//    //// Apply normal mapping if texture is available
+//    //if (material.normalTextureSet >= 0) {
+//    //    // Sample normal map and convert from [0,1] to [-1,1] range
+//    //    //float3 tangentNormal = normalMap.Sample(normalSampler, input.UV).xyz * 2.0 - 1.0;
+//    //    float3 tangentNormal = normalMap.Sample(input.UV).xyz * 2.0 - 1.0;
+//    //
+//    //    // Construct tangent-space to world-space transformation matrix (TBN)
+//    //    float3 T = normalize(input.Tangent.xyz);              // Tangent
+//    //    float3 B = normalize(cross(N, T)) * input.Tangent.w;  // Bitangent (w = handedness)
+//    //    float3x3 TBN = float3x3(T, B, N);                     // Tangent-Bitangent-Normal matrix
+//    //
+//    //    // Transform normal from tangent space to world space
+//    //    N = normalize(mul(tangentNormal, TBN));
+//    //}
+//
+//    // === NORMAL CALCULATION ===
+//    // Start with interpolated surface normal from the vertex stage
+//    //float3 N = normalize(input.Normal);
+//    // Ensure back-faces of doubleSided meshes light properly instead of turning black
+//    float3 N = normalize(input.Normal) * (isFrontFace ? 1.0 : -1.0);
+//
+//    // Apply normal mapping if texture is available
+//    if (material.normalTextureSet >= 0) {
+//        // Sample normal map and convert from [0,1] to [-1,1] range
+//        float3 tangentNormal = normalMap.Sample(input.UV).xyz * 2.0 - 1.0;
+//
+//        // FIXED: Procedural TBN matrix calculation using partial derivatives!
+//        // This completely eliminates the need for an input.Tangent field!
+//        float3 dp1 = ddx(input.WorldPos);
+//        float3 dp2 = ddy(input.WorldPos);
+//        float2 duv1 = ddx(input.UV);
+//        float2 duv2 = ddy(input.UV);
+//
+//        float3 dp2perp = cross(dp2, N);
+//        float3 dp1perp = cross(N, dp1);
+//        float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+//        float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+//
+//        float invmax = rsqrt(max(dot(T,T), dot(B,B)));
+//        float3x3 TBN = float3x3(T * invmax, B * invmax, N);
+//
+//        // Transform normal from tangent space to world space safely
+//        N = normalize(mul(tangentNormal, TBN));
+//    }
+//
+//    // === LIGHTING SETUP ===
+//    // Calculate view direction (fragment to camera)
+//    float3 V = normalize(ubo.camPos.xyz - input.WorldPos);
+//
+//    // Calculate reflection vector for environment mapping
+//    float3 R = reflect(-V, N);
+//
+//    // === PBR MATERIAL SETUP ===
+//    // Calculate F0 (reflectance at normal incidence)
+//    // Non-metals: low reflectance (~0.04), Metals: colored reflectance from base color
+//    float3 F0 = float3(0.04, 0.04, 0.04);  // Dielectric default
+//    F0 = lerp(F0, baseColor.rgb, metallic); // Lerp to metallic behavior
+//
+//    // Initialize outgoing radiance accumulator
+//    float3 Lo = float3(0.0, 0.0, 0.0);
+//
+//    // === DIRECT LIGHTING LOOP ===
+//    // Calculate contribution from each light source
+//    for (int i = 0; i < 4; i++) {
+//        float3 lightPos = ubo.lightPositions[i].xyz;
+//        float3 lightColor = ubo.lightColors[i].rgb;
+//
+//        // Calculate light direction and attenuation
+//        float3 L = normalize(lightPos - input.WorldPos);      // Light direction
+//        float distance = length(lightPos - input.WorldPos);   // Distance for falloff
+//        float attenuation = 1.0 / (distance * distance);     // Inverse square falloff
+//        float3 radiance = lightColor * attenuation;           // Attenuated light color
+//
+//        // Calculate half vector (between view and light directions)
+//        float3 H = normalize(V + L);
+//
+//        // === BRDF EVALUATION ===
+//        // Calculate all necessary dot products for BRDF terms
+//        float NdotL = max(dot(N, L), 0.0);  // Lambertian falloff
+//        float NdotV = max(dot(N, V), 0.0);  // View angle
+//        float NdotH = max(dot(N, H), 0.0);  // Half vector for specular
+//        float HdotV = max(dot(H, V), 0.0);  // For Fresnel calculation
+//
+//        // Evaluate Cook-Torrance BRDF components
+//        float D = DistributionGGX(NdotH, roughness);    // Normal distribution
+//        float G = GeometrySmith(NdotV, NdotL, roughness); // Geometry function
+//        float3 F = FresnelSchlick(HdotV, F0);           // Fresnel reflectance
+//
+//        // Calculate specular BRDF
+//        float3 numerator = D * G * F;
+//        float denominator = 4.0 * NdotV * NdotL + 0.0001; // Prevent division by zero
+//        float3 specular = numerator / denominator;
+//
+//        // === ENERGY CONSERVATION ===
+//        // Fresnel term represents specular reflection ratio
+//        float3 kS = F;                          // Specular contribution
+//        float3 kD = float3(1.0, 1.0, 1.0) - kS; // Diffuse contribution (energy conservation)
+//        kD *= 1.0 - metallic;                   // Metals have no diffuse reflection
+//
+//        // === RADIANCE ACCUMULATION ===
+//        // Combine diffuse (Lambertian) and specular (Cook-Torrance) terms
+//        // Multiply by incident radiance and cosine foreshortening
+//        Lo += (kD * baseColor.rgb / PI + specular) * radiance * NdotL;
+//    }
+//
+//    // === AMBIENT AND EMISSIVE ===
+//    // Add simple ambient lighting (should be replaced with IBL in production)
+//    //float3 ambient = float3(0.03, 0.03, 0.03) * baseColor.rgb * ao;
+//    float3 ambientSkyColor = float3(0.12, 0.15, 0.20); 
+//    float3 ambient = ambientSkyColor * baseColor.rgb * ao;
+//
+//    // Combine all lighting contributions
+//    float3 color = ambient + Lo + emissive;
+//
+//    // === HDR TONE MAPPING AND GAMMA CORRECTION ===
+//    // Apply Reinhard tone mapping to compress HDR values to [0,1] range
+//    color = color / (color + float3(1.0, 1.0, 1.0));
+//
+//    // Apply gamma correction for sRGB display (inverse gamma)
+//    color = pow(color, float3(1.0 / ubo.gamma, 1.0 / ubo.gamma, 1.0 / ubo.gamma));
+//
+//    // Output final color with original alpha
+//    //return float4(color, baseColor.a);
+//
+//    // 2. PACK RAW ATTRIBUTES DIRECTLY TO THE G-BUFFER (No lighting calculations here!)
+//    //output.Position = float4(input.WorldPos, 1.0);
+//    //output.Normal   = float4(N, 1.0);
+//    //output.Albedo   = baseColor;
+//    output.Position = float4(input.WorldPos, metallic);
+//    output.Normal   = float4(N, roughness);
+//    output.Albedo   = baseColor;
+//
+//    return output;
+//}

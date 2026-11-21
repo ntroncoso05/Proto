@@ -1,12 +1,10 @@
 #include "protopch.hpp"
 #include "RendererPipeline.hpp"
 
-// --- 🟩 ADD THESE CRITICAL MISSING COUPLING INCLUDES ---
 #include "Core/ServiceLocator.hpp"
-#include "Platform/Vulkan/VK_Renderer.hpp"
 #include "Core/Entity.hpp"
 #include "Core/ComponentTypes.hpp"
-#include "Renderer/Camera.hpp" 
+#include "Platform/Vulkan/VK_Renderer.hpp"
 
 namespace Proto
 {
@@ -24,37 +22,81 @@ namespace Proto
         return vk::Format::eD32Sfloat;
     }
 
-    //void SceneRenderer::ValidateDepthResources(uint32_t width, uint32_t height)
-    //{
-    //    if (m_DepthWidth == width && m_DepthHeight == height && *m_DepthImageView) {
-    //        return; // Allocation matches perfectly, skip re-creation
-    //    }
-    //
-    //    auto& renderer = VulkanRenderer::Get();
-    //    auto* imgUtil = renderer.GetVulkanImageSubsystem();
-    //    vk::Format depthFormat = findDepthFormat();
-    //
-    //    // Clear old handles safely
-    //    m_DepthImageView = nullptr;
-    //    m_DepthMemory = nullptr;
-    //    m_DepthImage = nullptr;
-    //
-    //    // Create 1x Single Sampled Optimal Depth Buffer Context
-    //    auto [img, mem] = imgUtil->CreateImage(
-    //        width, height, 1, vk::SampleCountFlagBits::e1, depthFormat,
-    //        vk::ImageTiling::eOptimal,
-    //        vk::ImageUsageFlagBits::eDepthStencilAttachment,
-    //        vk::MemoryPropertyFlagBits::eDeviceLocal
-    //    );
-    //
-    //    m_DepthImage = std::move(img);
-    //    m_DepthMemory = std::move(mem);
-    //    m_DepthImageView = imgUtil->CreateImageView(*m_DepthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
-    //
-    //    m_DepthWidth = width;
-    //    m_DepthHeight = height;
-    //    std::cout << "[ENGINE LOG]: Allocated dynamic depth buffer at size: " << width << "x" << height << std::endl;
-    //}
+    bool SceneRenderer::CreateFogPipeline()
+    {
+        try {
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
+
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/VolumetricFog.spv");
+            vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
+
+            std::array<vk::DescriptorSetLayoutBinding, 3> bindings = {
+                vk::DescriptorSetLayoutBinding{ 0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment },
+                vk::DescriptorSetLayoutBinding{ 1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment },
+                vk::DescriptorSetLayoutBinding{ 2, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment }
+            };
+            m_FogSetLayout = device.createDescriptorSetLayout({ .bindingCount = 3, .pBindings = bindings.data() });
+
+            std::array<vk::DescriptorSetLayout, 2> setLayouts = {
+                *lowLevelRenderer.vulkanCommandBuffer->descriptorSetLayout,
+                *m_FogSetLayout
+            };
+
+            vk::PushConstantRange pushRange{
+                .stageFlags = vk::ShaderStageFlagBits::eFragment,
+                .offset = 0,
+                .size = sizeof(FogPushConstants)
+            };
+
+            m_FogPipelineLayout = device.createPipelineLayout({
+                .setLayoutCount = 2,
+                .pSetLayouts = setLayouts.data(),
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &pushRange
+                });
+
+            std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+                vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eVertex,   .module = *shaderModule, .pName = "VSMain" },
+                vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eFragment, .module = *shaderModule, .pName = "PSMain" }
+            };
+            vk::PipelineVertexInputStateCreateInfo vertexInput;
+            vk::PipelineInputAssemblyStateCreateInfo inputAssembly{ .topology = vk::PrimitiveTopology::eTriangleList };
+            vk::PipelineViewportStateCreateInfo viewportState{ .viewportCount = 1, .scissorCount = 1 };
+            std::array<vk::DynamicState, 2> dynStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+            vk::PipelineDynamicStateCreateInfo dynamicState{ .dynamicStateCount = 2, .pDynamicStates = dynStates.data() };
+            vk::PipelineRasterizationStateCreateInfo rasterizer{ .polygonMode = vk::PolygonMode::eFill, .cullMode = vk::CullModeFlagBits::eNone, .lineWidth = 1.0f };
+            vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1 };
+            vk::PipelineDepthStencilStateCreateInfo depthStencil{ .depthTestEnable = vk::False, .depthWriteEnable = vk::False };
+            vk::PipelineColorBlendAttachmentState blendAttach{
+                .blendEnable = vk::False,
+                .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
+            };
+            vk::PipelineColorBlendStateCreateInfo colorBlending{ .attachmentCount = 1, .pAttachments = &blendAttach };
+            vk::Format format = vk::Format::eR16G16B16A16Sfloat;
+            vk::PipelineRenderingCreateInfo renderingInfo{ .colorAttachmentCount = 1, .pColorAttachmentFormats = &format };
+
+            m_FogPipeline = device.createGraphicsPipeline(nullptr, vk::GraphicsPipelineCreateInfo{
+                .pNext = &renderingInfo,
+                .stageCount = 2,
+                .pStages = stages.data(),
+                .pVertexInputState = &vertexInput,
+                .pInputAssemblyState = &inputAssembly,
+                .pViewportState = &viewportState,
+                .pRasterizationState = &rasterizer,
+                .pMultisampleState = &multisampling,
+                .pDepthStencilState = &depthStencil,
+                .pColorBlendState = &colorBlending,
+                .pDynamicState = &dynamicState,
+                .layout = *m_FogPipelineLayout
+                });
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "[FOG ERROR]: " << e.what() << std::endl;
+            return false;
+        }
+    }
 
     SceneRenderer::SceneRenderer(vk::raii::Device& dev, vk::Queue queue) : device(dev), graphicsQueue(queue)
     {
@@ -65,17 +107,28 @@ namespace Proto
         // Set up render passes
         SetupRenderPasses();
         CreatePBRPipeline();
+        CreateTransparentPipeline();
         CreateDeferredLightingPipeline();
+        CreateShadowPipeline();
+        CreateBloomPipelines();
+        CreateSSAOPipelines();
+        CreateParticlePipelines();
+        CreateSSRPipeline();
+        CreateFogPipeline();
+
+        m_EnvCubemap = std::make_shared<Texture>("studio_env_cubemap");
+        m_EnvCubemap->CreateProceduralStudioCubemap(64);
+
+        m_BrdfLutTex = std::make_shared<Texture>("studio_brdf_lut");
+        m_BrdfLutTex->CreateProceduralBRDFLUT(128);
     }
 
     void SceneRenderer::Render(const std::vector<Entity*>& entities, vk::raii::CommandBuffer& activeCmdBuffer, uint32_t imageIndex)
     {
-        //cullingSystem.CullScene(entities);
-        //auto visibleEntities = cullingSystem.GetVisibleEntities();
         auto visibleEntities = entities;
-        if (visibleEntities.empty()) {
-            visibleEntities = entities;
-        }
+        //if (visibleEntities.empty()) {
+        //    visibleEntities = entities;
+        //}
 
         auto& renderer = VulkanRenderer::Get();
         auto& logicalDevice = renderer.GetLogicalDevice();
@@ -116,7 +169,7 @@ namespace Proto
                             std::vector<std::unique_ptr<vk::DescriptorImageInfo>> stableImageInfos;
 
                             auto updateTextureSetSlot = [&](int textureIdx, uint32_t dstBinding) {
-                                std::string targetTextureId = "viking_room";
+                                std::string targetTextureId = "default_white";
 
                                 if (textureIdx >= 0 && textureIdx < static_cast<int>(rawModel->textureResourceIds.size())) {
                                     targetTextureId = rawModel->textureResourceIds[textureIdx];
@@ -126,7 +179,7 @@ namespace Proto
                                 auto* tex = resManager.GetResource<Texture>(targetTextureId);
 
                                 if (!tex || !tex->IsLoaded()) {
-                                    tex = resManager.GetResource<Texture>("viking_room");
+                                    tex = resManager.GetResource<Texture>("default_white");
                                 }
 
                                 if (tex) {
@@ -163,73 +216,17 @@ namespace Proto
             }
         }
 
-        // STAGE 2: STANDARD OPEN RENDERING PASS
-        //vk::Image swapchainImage = swapchainSubsystem->swapChainImages[imageIndex];
-        //vk::ImageView swapchainView = swapchainSubsystem->swapChainImageViews[imageIndex];
-
-        //vk::ImageMemoryBarrier barrierToRender{
-        //    .srcAccessMask = vk::AccessFlagBits::eNone,
-        //    .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-        //    .oldLayout = vk::ImageLayout::eUndefined,
-        //    .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-        //    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        //    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        //    .image = swapchainImage,
-        //    .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
-        //};
-        //
-        //vk::ImageMemoryBarrier barrierToRenderDepth{
-        //   .srcAccessMask = vk::AccessFlagBits::eNone,
-        //   .dstAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-        //   .oldLayout = vk::ImageLayout::eUndefined,
-        //   .newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-        //   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        //   .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        //   .image = *swapchainSubsystem->depthImage,
-        //   .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eDepth, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
-        //};
-        //
-        //activeCmdBuffer.pipelineBarrier(
-        //    vk::PipelineStageFlagBits::eTopOfPipe,
-        //    vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
-        //    vk::DependencyFlags(), {}, {}, { barrierToRender, barrierToRenderDepth }
-        //);
-        //
-        //vk::ClearValue clearColor = vk::ClearColorValue(std::array<float, 4>{0.1f, 0.1f, 0.15f, 1.0f});
-        //vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0); // Far-plane reset
-        //
-        //vk::RenderingAttachmentInfo colorAttachment;
-        //colorAttachment.setImageView(swapchainView)
-        //    .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
-        //    .setLoadOp(vk::AttachmentLoadOp::eClear)
-        //    .setStoreOp(vk::AttachmentStoreOp::eStore)
-        //    .setClearValue(clearColor);
-        //
-        //vk::RenderingAttachmentInfo depthAttachment;
-        //depthAttachment.setImageView(*swapchainSubsystem->depthImageView) // 🟩 Read directly from swapchain subsystem resource managers!
-        //    .setImageLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal)
-        //    .setLoadOp(vk::AttachmentLoadOp::eClear)
-        //    .setStoreOp(vk::AttachmentStoreOp::eDontCare)
-        //    .setClearValue(clearDepth);
-        //
-        //vk::RenderingInfo renderingInfo;
-        //renderingInfo.setRenderArea(vk::Rect2D({ 0, 0 }, { width, height }))
-        //    .setLayerCount(1)
-        //    .setColorAttachmentCount(1)
-        //    .setPColorAttachments(&colorAttachment)
-        //    .setPDepthAttachment(&depthAttachment);
-        //
-        //activeCmdBuffer.beginRendering(renderingInfo);
-
         // Bind our verified graphics state context layout definitions
         if (*pbrPipeline) {
             activeCmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pbrPipeline);
         }
 
-        float fWidth = static_cast<float>(width);
-        float fHeight = static_cast<float>(height);
-        activeCmdBuffer.setViewport(0, { vk::Viewport(0.0f, 0.0f, fWidth, fHeight, 0.0f, 1.0f) });
-        activeCmdBuffer.setScissor(0, { vk::Rect2D(vk::Offset2D(0, 0), swapchainSubsystem->swapChainExtent) });
+        auto vpSize = renderer.imGui->GetViewportSize();
+        float vpWidth = static_cast<float>(vpSize.x);
+        float vpHeight = static_cast<float>(vpSize.y);
+        activeCmdBuffer.setViewport(0, { vk::Viewport(0.0f, 0.0f, vpWidth, vpHeight, 0.0f, 1.0f) });
+        vk::Extent2D vpExtent = { static_cast<uint32_t>(vpWidth), static_cast<uint32_t>(vpHeight) };
+        activeCmdBuffer.setScissor(0, { vk::Rect2D(vk::Offset2D(0, 0), vpExtent) });
 
         CameraComponent* activeCameraComponent = nullptr;
         for (auto entity : entities) {
@@ -267,27 +264,21 @@ namespace Proto
                         glm::mat4 entityWorldMatrix = transform ? transform->GetWorldTransformMatrix() : glm::mat4(1.0f);
 
                         for (auto* rootNode : rawModel->nodes) {
-                            RenderModelNode(rootNode, entityWorldMatrix, activeCmdBuffer, rawModel, activeCameraComponent);
+                            RenderModelNode(rootNode, entityWorldMatrix, activeCmdBuffer, rawModel, activeCameraComponent, false, entity);
                         }
                     }
                 }
             }
         }
-
-        //activeCmdBuffer.endRendering();
     }
 
     bool SceneRenderer::CreatePBRPipeline() {
         try {
-            //if (!ServiceLocator::Contains<VulkanRenderer>()) {
-            //    std::cerr << "[WARN]: SceneRenderer cannot compile PBR pipelines because VulkanRenderer is not registered yet!" << std::endl;
-            //    return false;
-            //}
 
             auto& lowLevelRenderer = VulkanRenderer::Get();
             auto& device = lowLevelRenderer.GetLogicalDevice();
 
-            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("assets/shaders/pbr.spv");
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/pbr.spv");
             vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
 
             vk::PipelineShaderStageCreateInfo vertShaderStageInfo;
@@ -305,10 +296,10 @@ namespace Proto
             // Vertex Inputs Configuration
             vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
 
-            // FIXED 1: Use your structure's type-safe binding description layout
+            // Use your structure's type-safe binding description layout
             vk::VertexInputBindingDescription bindingDescription = Proto::Vertex::getBindingDescription();
 
-            // FIXED 2: Match your structure's actual 4-attribute layout. This removes the non-existent 5th attribute (Tangent) that corrupted memory alignment!
+            // Match your structure's actual 4-attribute layout. This removes the non-existent 5th attribute (Tangent) that corrupted memory alignment!
             std::array<vk::VertexInputAttributeDescription, 4> attributeDescriptions = {
                 vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Proto::Vertex, pos)),
                 vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Proto::Vertex, normal)),
@@ -342,16 +333,12 @@ namespace Proto
             depthStencil.setDepthTestEnable(true).setDepthWriteEnable(true).setDepthCompareOp(vk::CompareOp::eLess)
                 .setDepthBoundsTestEnable(false).setStencilTestEnable(false);
 
-            // 🟩 MRT FIX: Configure 3 matching attachment blend states!
-            std::array<vk::PipelineColorBlendAttachmentState, 3> blendAttachments;
-            for (size_t i = 0; i < 3; ++i) {
+            // Configure 5 matching attachment blend states!
+            std::array<vk::PipelineColorBlendAttachmentState, 5> blendAttachments;
+            for (size_t i = 0; i < 5; ++i) {
                 blendAttachments[i].setColorWriteMask(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA)
                     .setBlendEnable(false);
             }
-            //vk::PipelineColorBlendAttachmentState colorBlendAttachment;
-            //colorBlendAttachment.setColorWriteMask(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA)
-            //    .setBlendEnable(true).setSrcColorBlendFactor(vk::BlendFactor::eSrcAlpha).setDstColorBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha)
-            //    .setColorBlendOp(vk::BlendOp::eAdd).setSrcAlphaBlendFactor(vk::BlendFactor::eOne).setDstAlphaBlendFactor(vk::BlendFactor::eZero).setAlphaBlendOp(vk::BlendOp::eAdd);
 
             vk::PipelineColorBlendStateCreateInfo colorBlending;
             colorBlending.setLogicOpEnable(false)
@@ -361,7 +348,7 @@ namespace Proto
             vk::PushConstantRange pushConstantRange;
             pushConstantRange.setStageFlags(vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment).setOffset(0).setSize(sizeof(PushConstantBlock));
 
-            // FIXED 1: AUTONOMOUSLY INITIALIZE DESCRIPTOR SET 0 LAYOUT (GLOBAL UBO)
+            // AUTONOMOUSLY INITIALIZE DESCRIPTOR SET 0 LAYOUT (GLOBAL UBO)
             vk::DescriptorSetLayoutBinding uboBinding{
                 .binding = 0,
                 .descriptorType = vk::DescriptorType::eUniformBuffer,
@@ -375,7 +362,7 @@ namespace Proto
             // or let a local class variable hold it:
             vk::raii::DescriptorSetLayout uboDescriptorSetLayout = device.createDescriptorSetLayout(uboLayoutInfo);
 
-            // FIXED 2: AUTONOMOUSLY INITIALIZE DESCRIPTOR SET 1 LAYOUT (MATERIAL TEXTURES)
+            // AUTONOMOUSLY INITIALIZE DESCRIPTOR SET 1 LAYOUT (MATERIAL TEXTURES)
             std::array<vk::DescriptorSetLayoutBinding, 5> texBindings;
             for (uint32_t b = 0; b < 5; ++b) {
                 texBindings[b] = vk::DescriptorSetLayoutBinding{
@@ -388,7 +375,7 @@ namespace Proto
             vk::DescriptorSetLayoutCreateInfo texLayoutInfo{ .bindingCount = 5, .pBindings = texBindings.data() };
             descriptorSetLayout = device.createDescriptorSetLayout(texLayoutInfo);
 
-            // FIXED 3: PACK BOTH OPERATIONAL RAII HANDLES INTO THE LAYOUT MANAGER
+            // PACK BOTH OPERATIONAL RAII HANDLES INTO THE LAYOUT MANAGER
             vk::DescriptorSetLayout pipelineSetLayouts[] = {
                 *uboDescriptorSetLayout, // Set 0
                 *descriptorSetLayout     // Set 1
@@ -410,11 +397,13 @@ namespace Proto
                 .setPColorBlendState(&colorBlending).setPDynamicState(&dynamicState).setLayout(*pbrPipelineLayout)
                 .setRenderPass(nullptr).setSubpass(0).setBasePipelineHandle(nullptr);
 
-            // 🟩 MRT FIX: Map the 3 format types to match your BeginPass colorAttachments array!
-            std::array<vk::Format, 3> gBufferFormats = {
-                vk::Format::eR16G16B16A16Sfloat, // Target 0: Position
-                vk::Format::eR16G16B16A16Sfloat, // Target 1: Normal
-                vk::Format::eR8G8B8A8Unorm       // Target 2: Albedo
+            // Map the 5 format types to match your BeginPass colorAttachments array!
+            std::array<vk::Format, 5> gBufferFormats = {
+                vk::Format::eR16G16B16A16Sfloat, // Target 0: Position + Metallic
+                vk::Format::eR16G16B16A16Sfloat, // Target 1: Normal + Roughness
+                vk::Format::eR8G8B8A8Unorm,      // Target 2: Albedo
+                vk::Format::eR16G16B16A16Sfloat,  // Target 3: Emissive (HDR linear)
+                vk::Format::eR8G8B8A8Unorm       // Target 4: SurfaceExt (Clearcoat + Iridescence)
             };
 
             vk::PipelineRenderingCreateInfo renderingInfo;
@@ -425,7 +414,7 @@ namespace Proto
 
             pbrPipeline = device.createGraphicsPipeline(nullptr, pipelineInfo);
 
-            // 🟩 ADD THIS CRITICAL DEBUG TRAP:
+            // CRITICAL DEBUG TRAP:
             if (!*pbrPipeline) {
                 throw std::runtime_error("[FATAL ENGINE ERROR]: PBR Graphics Pipeline compilation returned nullptr! Check shader attributes mapping.");
             }
@@ -446,7 +435,6 @@ namespace Proto
         // Create the uniform buffer object
         PBRUniformBufferObject ubo{};
 
-        Camera* activeCam = nullptr;
         if (camera != nullptr)
         {
             ubo.view = camera->GetViewMatrix();
@@ -454,40 +442,71 @@ namespace Proto
         }
         else {
             // Fallback: If no ECS component is active yet, fetch view matrices from the raw fly camera
-            activeCam = cullingSystem.GetCamera();
-            if (activeCam) {
-                ubo.view = activeCam->getViewMatrix();
-                ubo.camPos = glm::vec4(activeCam->getPosition(), 1.0f);
+            if (camera) {
+                ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+                ubo.camPos = glm::vec4(camera->GetPosition(), 1.0f);
             }
         }
 
         // Build a precise, clean perspective matrix
-        float fovRadians = glm::radians(45.0f);
-        float aspect = static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height);
-        glm::mat4 projection = glm::perspective(fovRadians, aspect, 0.1f, 100.0f);
+        glm::vec2 vpSize = VulkanRenderer::Get().imGui
+            ? VulkanRenderer::Get().imGui->GetViewportSize()
+            : glm::vec2(1280.0f, 720.0f);
 
-        // 🟩 CLEAN VULKAN Y-FLIP: Rotate the clip space coordinates by 180 degrees 
-        // around the X-axis instead of multiplying matrix indices. This cleanly mirrors the viewport 
-        // without shearing or distorting your meshes!
-        glm::mat4 correction = glm::scale(glm::mat4(1.0f), glm::vec3(1.0f, -1.0f, 1.0f));
-        ubo.proj = correction * projection;
+        float aspect = (vpSize.x > 0.0f && vpSize.y > 0.0f) ? (vpSize.x / vpSize.y) : static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height);
+
+        float fovDegrees = camera ? camera->GetFOV() : 45.0f; // Adjust member/getter name to match ComponentTypes.hpp
+        float nearClip = camera ? camera->GetNearClip() : 0.1f;
+        float farClip = camera ? camera->GetFarClip() : 100.0f;
+
+        if (camera) {
+            camera->SetAspectRatio(aspect);
+            ubo.proj = camera->GetProjectionMatrix();
+        }
+        else {
+            glm::mat4 fallbackProj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+            ubo.proj = fallbackProj;
+        }
 
         // Set up lights with physically balanced intensities
-        // Light 1: Pure White Light coming from slightly behind the camera view tracking
-        ubo.lightPositions[0] = glm::vec4(0.0f, 10.0f, 8.0f, 1.0f);
-        ubo.lightColors[0] = glm::vec4(45.0f, 45.0f, 45.0f, 1.0f);
+        for (int i = 0; i < 4; ++i) {
+            ubo.lightPositions[i] = glm::vec4(0.0f);
+            ubo.lightColors[i] = glm::vec4(0.0f);
+        }
 
-        // Light 2: Soft Blue fill light coming from the left to handle shadows
-        ubo.lightPositions[1] = glm::vec4(-10.0f, 2.0f, 0.0f, 1.0f);
-        ubo.lightColors[1] = glm::vec4(5.0f, 5.0f, 15.0f, 1.0f);
+        int lightIdx = 0;
+        for (Entity* sceneEntity : Entity::GetActiveSceneEntities()) {
+            if (!sceneEntity || !sceneEntity->IsActive()) continue;
+            auto* lightComp = sceneEntity->GetComponent<LightComponent>();
+            auto* lightTrans = sceneEntity->GetComponent<TransformComponent>();
+            if (!lightComp || !lightTrans) continue;
 
-        // Light 3: Soft Amber rim light coming from behind the room mesh structure
-        ubo.lightPositions[2] = glm::vec4(0.0f, 1.0f, -10.0f, 1.0f);
-        ubo.lightColors[2] = glm::vec4(15.0f, 10.0f, 5.0f, 1.0f);
+            glm::vec3 dir = glm::normalize(lightTrans->GetRotation() * glm::vec3(0.0f, 0.0f, -1.0f));
+            glm::vec3 pos = glm::vec3(lightTrans->GetWorldTransformMatrix()[3]);
 
-        // Light 4: Fill Light
-        ubo.lightPositions[3] = glm::vec4(0.0f, -5.0f, 0.0f, 1.0f);
-        ubo.lightColors[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f); // Leave offline
+            if (lightComp->Type == LightType::Directional) {
+                ubo.lightPositions[lightIdx] = glm::vec4(dir, 0.0f);
+            }
+            else if (lightComp->Type == LightType::Point) {
+                ubo.lightPositions[lightIdx] = glm::vec4(pos, 1.0f);
+            }
+            else { // Spot
+                ubo.lightPositions[lightIdx] = glm::vec4(pos, 2.0f);
+                ubo.lightDirections[lightIdx] = glm::vec4(dir, 0.0f);
+                ubo.lightConeParams[lightIdx] = glm::vec4(
+                    std::cos(glm::radians(lightComp->InnerConeAngle)),
+                    std::cos(glm::radians(lightComp->OuterConeAngle)),
+                    0.0f, 0.0f
+                );
+            }
+
+            ubo.lightColors[lightIdx] = glm::vec4(lightComp->Color * lightComp->Intensity, lightComp->Radius);
+
+            lightIdx++;
+            if (lightIdx >= 4) break;
+        }
+
+        ComputeShadowAtlasMatrices(ubo.lightSpaceMatrices, ubo.lightShadowEnabled);
 
         // Set camera position for view-dependent effects
         ubo.camPos = glm::vec4(camera ? camera->GetPosition() : glm::vec3(2.0f, 2.0f, 2.0f), 1.0f);
@@ -497,6 +516,8 @@ namespace Proto
         ubo.gamma = 2.2f;
         ubo.prefilteredCubeMipLevels = 1.0f;
         ubo.scaleIBLAmbient = 1.0f;
+        ubo.prefilteredCubeMipLevels = m_EnvCubemap ? static_cast<float>(m_EnvCubemap->mipLevels) : 1.0f;
+        ubo.scaleIBLAmbient = m_IBLIntensity;
 
         // Copy the uniform buffer object to the device memory using vk::raii
         // With vk::raii, we can use the mapped memory directly
@@ -509,18 +530,40 @@ namespace Proto
     }
 
     // Push material properties to shader
-    void SceneRenderer::pushMaterialProperties(vk::CommandBuffer commandBuffer, const Model* model, uint32_t materialIndex, const glm::mat4& globalMatrix) {
-        // Get material from the model
+    void SceneRenderer::pushMaterialProperties(vk::CommandBuffer commandBuffer, const Model* model,
+        uint32_t materialIndex, const glm::mat4& globalMatrix, Entity* ownerEntity) {
         const Material& material = model->materials[materialIndex];
 
+        glm::vec4 baseColor = material.baseColorFactor;
+        glm::vec3 emissive = material.emissiveFactor;
+        float     metallic = material.metallicFactor;
+        float     roughness = material.roughnessFactor;
+        float     clearcoat = material.clearcoatFactor;
+        float     clearcoatRough = material.clearcoatRoughness;
+        float     iridescence = material.iridescenceFactor;
+
+        if (ownerEntity) {
+            if (auto* ovComp = ownerEntity->GetComponent<MaterialOverrideComponent>()) {
+                auto it = ovComp->Overrides.find(materialIndex);
+                if (it != ovComp->Overrides.end() && it->second.Enabled) {
+                    const auto& ov = it->second;
+                    baseColor = ov.BaseColorFactor;
+                    emissive = ov.EmissiveFactor;
+                    metallic = ov.MetallicFactor;
+                    roughness = ov.RoughnessFactor;
+                    clearcoat = ov.ClearcoatFactor;
+                    clearcoatRough = ov.ClearcoatRoughness;
+                    iridescence = ov.IridescenceFactor;
+                }
+            }
+        }
+
         PushConstantBlock pushConstants{};
-
-        // 🟩 Pass the unique node matrix straight into the push constant block!
         pushConstants.modelMatrix = globalMatrix;
-
-        pushConstants.baseColorFactor = material.baseColorFactor;
-        pushConstants.metallicRoughnessFactors.x = material.metallicFactor;
-        pushConstants.metallicRoughnessFactors.y = material.roughnessFactor;
+        pushConstants.baseColorFactor = baseColor;
+        pushConstants.emissiveFactor = glm::vec4(emissive, m_EmissiveStrength);
+        pushConstants.coatAndIridescence = glm::vec4(clearcoat, clearcoatRough, iridescence, material.iridescenceIor);
+        pushConstants.metallicRoughnessFactors = glm::vec4(metallic, roughness, 0.0f, 0.0f);
 
         pushConstants.baseColorTextureSet = material.baseColorTextureIndex;
         pushConstants.physicalDescriptorTextureSet = material.metallicRoughnessTextureIndex;
@@ -546,7 +589,7 @@ namespace Proto
             auto& device = lowLevelRenderer.GetLogicalDevice();
 
             // 1. Load your separate compiled lighting pass bytecode stream
-            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("assets/shaders/DeferredLighting.spv");
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/DeferredLighting.spv");
             vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
 
             vk::PipelineShaderStageCreateInfo vertStageInfo{
@@ -562,8 +605,7 @@ namespace Proto
             };
             std::array<vk::PipelineShaderStageCreateInfo, 2> shaderStages = { vertStageInfo, fragStageInfo };
 
-            // CRITICAL DEFERRED FIX: Empty Vertex Input State Layout!
-            // We bind no CPU structures because the shader builds the fullscreen canvas procedurally.
+            // Empty Vertex Input State Layout! We bind no CPU structures because the shader builds the fullscreen canvas procedurally.
             vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
 
             vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
@@ -583,7 +625,7 @@ namespace Proto
 
             vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1 };
 
-            // 3. 🟩 DISABLE DEPTH WRITING: Lighting pass uses 2D screen sampling
+            // DISABLE DEPTH WRITING: Lighting pass uses 2D screen sampling
             vk::PipelineDepthStencilStateCreateInfo depthStencil{
                 .depthTestEnable = vk::False,
                 .depthWriteEnable = vk::False,
@@ -596,18 +638,9 @@ namespace Proto
             };
             vk::PipelineColorBlendStateCreateInfo colorBlending{ .attachmentCount = 1, .pAttachments = &colorBlendAttachment };
 
-            // Pack layouts using your existing UBO set layout properties
-            //vk::DescriptorSetLayout pipelineSetLayouts[] = {
-            //    *lowLevelRenderer.vulkanCommandBuffer->descriptorSetLayout, // Set 0: Global Engine UBOs
-            //    *descriptorSetLayout                                       // Set 1: G-Buffer textures samplers mapping
-            //};
-            //
-            //vk::PipelineLayoutCreateInfo pipelineLayoutInfo{ .setLayoutCount = 2, .pSetLayouts = pipelineSetLayouts };
-            //m_DeferredPipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
-
-            // 🟩 FIXED: Compile a dedicated 3-binding descriptor set layout specifically for your 3 G-Buffer inputs!
-            std::array<vk::DescriptorSetLayoutBinding, 3> gBufferBindings;
-            for (uint32_t b = 0; b < 3; ++b) {
+            // Compile a dedicated 3-binding descriptor set layout specifically for your 10 G-Buffer inputs!
+            std::array<vk::DescriptorSetLayoutBinding, 10> gBufferBindings;
+            for (uint32_t b = 0; b < 10; ++b) {
                 gBufferBindings[b] = vk::DescriptorSetLayoutBinding{
                     .binding = b,
                     .descriptorType = vk::DescriptorType::eCombinedImageSampler,
@@ -623,13 +656,24 @@ namespace Proto
             // Allocate a separate layout handle variable (ensure you declare vk::raii::DescriptorSetLayout m_DeferredSetLayout{nullptr}; in your class header private section)
             m_DeferredSetLayout = device.createDescriptorSetLayout(gBufferLayoutInfo);
 
+            vk::PushConstantRange shadowPushRange{
+                .stageFlags = vk::ShaderStageFlagBits::eFragment,
+                .offset = 0,
+                .size = sizeof(DeferredShadowPushConstants)
+            };
+
             // Pack layouts for your deferred lighting pipeline
             vk::DescriptorSetLayout deferredPipelineSetLayouts[] = {
                 *lowLevelRenderer.vulkanCommandBuffer->descriptorSetLayout, // Set 0: Global Engine UBOs
                 *m_DeferredSetLayout                                       // Set 1: 3 G-Buffer attachments
             };
 
-            vk::PipelineLayoutCreateInfo pipelineLayoutInfo{ .setLayoutCount = 2, .pSetLayouts = deferredPipelineSetLayouts };
+            vk::PipelineLayoutCreateInfo pipelineLayoutInfo{ 
+                .setLayoutCount = 2,
+                .pSetLayouts = deferredPipelineSetLayouts,
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &shadowPushRange
+            };
             m_DeferredPipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
 
             vk::GraphicsPipelineCreateInfo pipelineInfo{
@@ -648,7 +692,8 @@ namespace Proto
 
             // Link straight to backbuffer swapchain format requirements for final output
             vk::PipelineRenderingCreateInfo renderingInfo;
-            renderingInfo.setColorAttachmentCount(1).setPColorAttachmentFormats(&swapChainImageFormat);
+            vk::Format colorFormat = vk::Format::eR16G16B16A16Sfloat;
+            renderingInfo.setColorAttachmentCount(1).setPColorAttachmentFormats(&colorFormat);
             pipelineInfo.setPNext(&renderingInfo);
 
             m_DeferredPipeline = device.createGraphicsPipeline(nullptr, pipelineInfo);
@@ -656,6 +701,833 @@ namespace Proto
         }
         catch (const std::exception& e) {
             std::cerr << "[DEFERRED ERROR]: Pipeline initialization skipped: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    bool SceneRenderer::CreateShadowPipeline()
+    {
+        try {
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
+
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/Shadow.spv");
+            vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
+
+            vk::PipelineShaderStageCreateInfo vertStage{
+                .stage = vk::ShaderStageFlagBits::eVertex,
+                .module = *shaderModule,
+                .pName = "VSMain"
+            };
+
+            // Match Proto::Vertex stride (location 0 = pos)
+            vk::VertexInputBindingDescription bindingDesc = Proto::Vertex::getBindingDescription();
+            vk::VertexInputAttributeDescription posAttr(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Proto::Vertex, pos));
+
+            vk::PipelineVertexInputStateCreateInfo vertexInput{
+                .vertexBindingDescriptionCount = 1,
+                .pVertexBindingDescriptions = &bindingDesc,
+                .vertexAttributeDescriptionCount = 1,
+                .pVertexAttributeDescriptions = &posAttr
+            };
+
+            vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
+                .topology = vk::PrimitiveTopology::eTriangleList
+            };
+
+            vk::PipelineViewportStateCreateInfo viewportState{ .viewportCount = 1, .scissorCount = 1 };
+            std::array<vk::DynamicState, 2> dynamicStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+            vk::PipelineDynamicStateCreateInfo dynamicState{
+                .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+                .pDynamicStates = dynamicStates.data()
+            };
+
+            // Front-face culling + depth bias eliminates shadow acne and peter-panning
+            vk::PipelineRasterizationStateCreateInfo rasterizer{
+                .polygonMode = vk::PolygonMode::eFill,
+                .cullMode = vk::CullModeFlagBits::eFront,
+                .frontFace = vk::FrontFace::eCounterClockwise,
+                .depthBiasEnable = vk::True,
+                .depthBiasConstantFactor = 1.25f,
+                .depthBiasSlopeFactor = 1.75f,
+                .lineWidth = 1.0f
+            };
+
+            vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1 };
+
+            vk::PipelineDepthStencilStateCreateInfo depthStencil{
+                .depthTestEnable = vk::True,
+                .depthWriteEnable = vk::True,
+                .depthCompareOp = vk::CompareOp::eLessOrEqual
+            };
+
+            vk::PipelineColorBlendStateCreateInfo colorBlending{ .attachmentCount = 0 };
+
+            vk::PushConstantRange pushRange{
+                .stageFlags = vk::ShaderStageFlagBits::eVertex,
+                .offset = 0,
+                .size = sizeof(ShadowMapPushConstants)
+            };
+
+            vk::PipelineLayoutCreateInfo layoutInfo{
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &pushRange
+            };
+            m_ShadowPipelineLayout = device.createPipelineLayout(layoutInfo);
+
+            vk::Format depthFormat = vk::Format::eD32Sfloat;
+            vk::PipelineRenderingCreateInfo renderingInfo{
+                .colorAttachmentCount = 0,
+                .depthAttachmentFormat = depthFormat
+            };
+
+            vk::GraphicsPipelineCreateInfo pipelineInfo{
+                .pNext = &renderingInfo,
+                .stageCount = 1,
+                .pStages = &vertStage,
+                .pVertexInputState = &vertexInput,
+                .pInputAssemblyState = &inputAssembly,
+                .pViewportState = &viewportState,
+                .pRasterizationState = &rasterizer,
+                .pMultisampleState = &multisampling,
+                .pDepthStencilState = &depthStencil,
+                .pColorBlendState = &colorBlending,
+                .pDynamicState = &dynamicState,
+                .layout = *m_ShadowPipelineLayout
+            };
+
+            m_ShadowPipeline = device.createGraphicsPipeline(nullptr, pipelineInfo);
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "[SHADOW ERROR]: Failed to create shadow pipeline: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    void SceneRenderer::ComputeShadowAtlasMatrices(glm::mat4 outMatrices[4], glm::ivec4& outShadowEnabled) const
+    {
+        outShadowEnabled = glm::ivec4(0);
+        int lightIdx = 0;
+
+        for (Entity* entity : Entity::GetActiveSceneEntities()) {
+            if (!entity || !entity->IsActive()) continue;
+            auto* lightComp = entity->GetComponent<LightComponent>();
+            auto* lightTrans = entity->GetComponent<TransformComponent>();
+            if (!lightComp || !lightTrans) continue;
+
+            if (lightComp->CastShadows) {
+                glm::vec3 lightPos = glm::vec3(lightTrans->GetWorldTransformMatrix()[3]);
+                glm::vec3 lightDir = glm::normalize(lightTrans->GetRotation() * glm::vec3(0.0f, 0.0f, -1.0f));
+                glm::vec3 upVec = (std::abs(glm::dot(lightDir, glm::vec3(0.0f, 1.0f, 0.0f))) > 0.99f)
+                    ? glm::vec3(0.0f, 0.0f, 1.0f)
+                    : glm::vec3(0.0f, 1.0f, 0.0f);
+
+                glm::mat4 lightView(1.0f);
+                glm::mat4 lightProj(1.0f);
+
+                if (lightComp->Type == LightType::Directional) {
+                    glm::vec3 sceneCenter(0.0f, 0.0f, -2.0f);
+                    lightView = glm::lookAt(sceneCenter - lightDir * 25.0f, sceneCenter, upVec);
+                    lightProj = glm::orthoRH_ZO(-20.0f, 20.0f, -20.0f, 20.0f, 0.1f, 60.0f);
+                }
+                else if (lightComp->Type == LightType::Spot) {
+                    lightView = glm::lookAt(lightPos, lightPos + lightDir, upVec);
+                    float fov = glm::clamp(lightComp->OuterConeAngle * 2.0f, 10.0f, 170.0f);
+                    lightProj = glm::perspectiveRH_ZO(glm::radians(fov), 1.0f, 0.1f, std::max(lightComp->Radius, 1.0f));
+                }
+                else { // Point light wide-angle projection
+                    lightView = glm::lookAt(lightPos, lightPos + lightDir, upVec);
+                    lightProj = glm::perspectiveRH_ZO(glm::radians(140.0f), 1.0f, 0.1f, std::max(lightComp->Radius, 1.0f));
+                }
+
+                lightProj[1][1] *= -1.0f; // Flip Y axis only for Vulkan NDC!
+                outMatrices[lightIdx] = lightProj * lightView;
+                outShadowEnabled[lightIdx] = 1;
+            }
+
+            lightIdx++;
+            if (lightIdx >= 4) break;
+        }
+    }
+
+    void SceneRenderer::RenderShadowPass(vk::raii::CommandBuffer& cmd, const glm::mat4 lightSpaceMatrices[4], const glm::ivec4& shadowEnabled)
+    {
+        if (!*m_ShadowPipeline) return;
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_ShadowPipeline);
+
+        for (int i = 0; i < 4; ++i) {
+            if (shadowEnabled[i] == 0) continue;
+
+            float tileX = static_cast<float>((i % 2) * 2048);
+            float tileY = static_cast<float>((i / 2) * 2048);
+            cmd.setViewport(0, { vk::Viewport(tileX, tileY, 2048.0f, 2048.0f, 0.0f, 1.0f) });
+            cmd.setScissor(0, { vk::Rect2D({ static_cast<int32_t>(tileX), static_cast<int32_t>(tileY) },{ 2048, 2048 }) });
+
+            std::function<void(Node*, const glm::mat4&)> drawShadowNode = [&](Node* node, const glm::mat4& parentMat) {
+                if (!node) return;
+                glm::mat4 globalMat = parentMat * node->getLocalMatrix();
+
+                if (node->mesh && node->mesh->IsLoaded()) {
+                    ShadowMapPushConstants pc{ lightSpaceMatrices[i], globalMat };
+                    cmd.pushConstants(*m_ShadowPipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(ShadowMapPushConstants), &pc);
+                    cmd.bindVertexBuffers(0, { *node->mesh->GetVertexBuffer() }, { 0 });
+                    cmd.bindIndexBuffer(*node->mesh->GetIndexBuffer(), 0, vk::IndexType::eUint32);
+                    cmd.drawIndexed(node->mesh->GetIndexCount(), 1, 0, 0, 0);
+                }
+                for (auto* child : node->children) {
+                    drawShadowNode(child, globalMat);
+                }
+            };
+
+            for (Entity* entity : Entity::GetActiveSceneEntities()) {
+                if (!entity || !entity->IsActive()) continue;
+                auto* modelComp = entity->GetComponent<ModelComponent>();
+                if (!modelComp || !modelComp->GetModelHandle().IsValid()) continue;
+                Model* rawModel = modelComp->GetModelHandle().Get();
+                if (!rawModel || !rawModel->IsLoaded()) continue;
+
+                auto* transform = entity->GetComponent<TransformComponent>();
+                glm::mat4 worldMat = transform ? transform->GetWorldTransformMatrix() : glm::mat4(1.0f);
+                for (auto* rootNode : rawModel->nodes) {
+                    drawShadowNode(rootNode, worldMat);
+                }
+            }
+        }
+    }
+
+    glm::mat4 SceneRenderer::ComputeLightSpaceMatrix(bool& outShadowEnabled) const
+    {
+        outShadowEnabled = false;
+        for (Entity* entity : Entity::GetActiveSceneEntities()) {
+            if (!entity || !entity->IsActive()) continue;
+            auto* lightComp = entity->GetComponent<LightComponent>();
+            auto* lightTrans = entity->GetComponent<TransformComponent>();
+            if (!lightComp || !lightTrans) continue;
+
+            if (lightComp->Type != LightType::Directional) continue;
+
+            outShadowEnabled = lightComp->CastShadows;
+            if (!outShadowEnabled) return glm::mat4(1.0f);
+
+            glm::vec3 lightPos = glm::vec3(lightTrans->GetWorldTransformMatrix()[3]);
+            glm::vec3 lightDir = glm::normalize(lightTrans->GetRotation() * glm::vec3(0.0f, 0.0f, -1.0f));
+
+            // Avoid degenerate up-vector if light points straight down
+            glm::vec3 upVec = (std::abs(glm::dot(lightDir, glm::vec3(0.0f, 1.0f, 0.0f))) > 0.99f)
+                ? glm::vec3(0.0f, 0.0f, 1.0f)
+                : glm::vec3(0.0f, 1.0f, 0.0f);
+
+            glm::mat4 lightView = glm::lookAt(lightPos, lightPos + lightDir, upVec);
+            glm::mat4 lightProj = glm::orthoRH_ZO(-15.0f, 15.0f, -15.0f, 15.0f, 0.1f, 50.0f);
+            lightProj[1][1] *= -1.0f; // Match Vulkan Y-flipped NDC space
+
+            return lightProj * lightView;
+        }
+        return glm::mat4(1.0f);
+    }
+
+    bool SceneRenderer::CreateTransparentPipeline()
+    {
+        try {
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
+
+            // Uses a forward PBR/unlit glass shader that outputs directly to FinalColor (1 color attachment)
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/pbr_forward.spv");
+            vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
+
+            vk::PipelineShaderStageCreateInfo vertStage{
+                .stage = vk::ShaderStageFlagBits::eVertex, .module = *shaderModule, .pName = "VSMain"
+            };
+            vk::PipelineShaderStageCreateInfo fragStage{
+                .stage = vk::ShaderStageFlagBits::eFragment, .module = *shaderModule, .pName = "PSMain"
+            };
+            std::array<vk::PipelineShaderStageCreateInfo, 2> shaderStages = { vertStage, fragStage };
+
+            vk::VertexInputBindingDescription bindingDescription = Proto::Vertex::getBindingDescription();
+            std::array<vk::VertexInputAttributeDescription, 4> attributeDescriptions = {
+                vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Proto::Vertex, pos)),
+                vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Proto::Vertex, normal)),
+                vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32B32Sfloat, offsetof(Proto::Vertex, color)),
+                vk::VertexInputAttributeDescription(3, 0, vk::Format::eR32G32B32Sfloat, offsetof(Proto::Vertex, texCoord))
+            };
+
+            vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+            vertexInputInfo.setVertexBindingDescriptionCount(1)
+                .setPVertexBindingDescriptions(&bindingDescription)
+                .setVertexAttributeDescriptionCount(static_cast<uint32_t>(attributeDescriptions.size()))
+                .setPVertexAttributeDescriptions(attributeDescriptions.data());
+
+            vk::PipelineInputAssemblyStateCreateInfo inputAssembly;
+            inputAssembly.setTopology(vk::PrimitiveTopology::eTriangleList);
+
+            vk::PipelineViewportStateCreateInfo viewportState;
+            viewportState.setViewportCount(1).setScissorCount(1);
+
+            std::vector<vk::DynamicState> dynamicStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+            vk::PipelineDynamicStateCreateInfo dynamicState;
+            dynamicState.setDynamicStateCount(static_cast<uint32_t>(dynamicStates.size())).setPDynamicStates(dynamicStates.data());
+
+            // Double-sided rendering for glass and thin interior panels
+            vk::PipelineRasterizationStateCreateInfo rasterizer;
+            rasterizer.setPolygonMode(vk::PolygonMode::eFill)
+                .setLineWidth(1.0f)
+                .setCullMode(vk::CullModeFlagBits::eNone)
+                .setFrontFace(vk::FrontFace::eCounterClockwise);
+
+            vk::PipelineMultisampleStateCreateInfo multisampling;
+            multisampling.setRasterizationSamples(vk::SampleCountFlagBits::e1);
+
+            // Read depth from GeometryPass so opaque car parts occlude glass, but disable depth writes
+            vk::PipelineDepthStencilStateCreateInfo depthStencil;
+            depthStencil.setDepthTestEnable(true)
+                .setDepthWriteEnable(false)
+                .setDepthCompareOp(vk::CompareOp::eLess);
+
+            // Standard SrcAlpha / OneMinusSrcAlpha blending
+            vk::PipelineColorBlendAttachmentState colorBlendAttachment;
+            colorBlendAttachment.setColorWriteMask(
+                vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA)
+                .setBlendEnable(true)
+                .setSrcColorBlendFactor(vk::BlendFactor::eSrcAlpha)
+                .setDstColorBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha)
+                .setColorBlendOp(vk::BlendOp::eAdd)
+                .setSrcAlphaBlendFactor(vk::BlendFactor::eOne)
+                .setDstAlphaBlendFactor(vk::BlendFactor::eZero)
+                .setAlphaBlendOp(vk::BlendOp::eAdd);
+
+            vk::PipelineColorBlendStateCreateInfo colorBlending;
+            colorBlending.setLogicOpEnable(false)
+                .setAttachmentCount(1)
+                .setPAttachments(&colorBlendAttachment);
+
+            vk::PipelineRenderingCreateInfo renderingInfo;
+            vk::Format colorFormat = vk::Format::eR16G16B16A16Sfloat;
+            renderingInfo.setColorAttachmentCount(1)                
+                .setPColorAttachmentFormats(&colorFormat) //.setPColorAttachmentFormats(&swapChainImageFormat)
+                .setDepthAttachmentFormat(findDepthFormat());
+
+            vk::GraphicsPipelineCreateInfo pipelineInfo;
+            pipelineInfo.setPNext(&renderingInfo)
+                .setStageCount(static_cast<uint32_t>(shaderStages.size()))
+                .setPStages(shaderStages.data())
+                .setPVertexInputState(&vertexInputInfo)
+                .setPInputAssemblyState(&inputAssembly)
+                .setPViewportState(&viewportState)
+                .setPRasterizationState(&rasterizer)
+                .setPMultisampleState(&multisampling)
+                .setPDepthStencilState(&depthStencil)
+                .setPColorBlendState(&colorBlending)
+                .setPDynamicState(&dynamicState)
+                .setLayout(*pbrPipelineLayout); // Reuses the exact same UBO + Material Texture layout!
+
+            m_TransparentPipeline = device.createGraphicsPipeline(nullptr, pipelineInfo);
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "[TRANSPARENT PIPELINE ERROR]: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    void SceneRenderer::RenderTransparentPass(const std::vector<Entity*>& entities, vk::raii::CommandBuffer& activeCmdBuffer)
+    {
+        if (!*m_TransparentPipeline) return;
+
+        auto& renderer = VulkanRenderer::Get();
+        uint32_t currentFrame = renderer.vulkanSwapChain->GetFrameIndex();
+
+        activeCmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_TransparentPipeline);
+
+        if (!renderer.vulkanCommandBuffer->descriptorSets.empty()) {
+            activeCmdBuffer.bindDescriptorSets(
+                vk::PipelineBindPoint::eGraphics,
+                *pbrPipelineLayout,
+                0,
+                { *renderer.vulkanCommandBuffer->descriptorSets[currentFrame] },
+                {}
+            );
+        }
+
+        for (auto entity : entities) {
+            if (!entity || !entity->IsActive()) continue;
+            auto* modelComp = entity->GetComponent<ModelComponent>();
+            if (!modelComp || !modelComp->GetModelHandle().IsValid()) continue;
+
+            Model* rawModel = modelComp->GetModelHandle().Get();
+            if (!rawModel || !rawModel->IsLoaded()) continue;
+
+            auto* transform = entity->GetComponent<TransformComponent>();
+            glm::mat4 entityWorldMatrix = transform ? transform->GetWorldTransformMatrix() : glm::mat4(1.0f);
+
+            for (auto* rootNode : rawModel->nodes) {
+                RenderModelNode(rootNode, entityWorldMatrix, activeCmdBuffer, rawModel, nullptr, true, entity);
+            }
+        }
+    }
+
+    bool SceneRenderer::CreateBloomPipelines()
+    {
+        try {
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
+
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/Bloom.spv");
+            vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
+
+            std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {
+                vk::DescriptorSetLayoutBinding{ 0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment },
+                vk::DescriptorSetLayoutBinding{ 1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment }
+            };
+            m_BloomSetLayout = device.createDescriptorSetLayout({ .bindingCount = 2, .pBindings = bindings.data() });
+
+            vk::PushConstantRange pushRange{
+                .stageFlags = vk::ShaderStageFlagBits::eFragment,
+                .offset = 0,
+                .size = sizeof(BloomPushConstants)
+            };
+            m_BloomPipelineLayout = device.createPipelineLayout({
+                .setLayoutCount = 1,
+                .pSetLayouts = &*m_BloomSetLayout,
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &pushRange
+                });
+
+            auto buildFullscreenPipeline = [&](const char* fragEntry, vk::Format targetFormat) -> vk::raii::Pipeline {
+                std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+                    vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eVertex, .module = *shaderModule, .pName = "VSMain" },
+                    vk::PipelineShaderStageCreateInfo{.stage = vk::ShaderStageFlagBits::eFragment, .module = *shaderModule, .pName = fragEntry }
+                };
+
+                vk::PipelineVertexInputStateCreateInfo vertexInput;
+                vk::PipelineInputAssemblyStateCreateInfo inputAssembly{ .topology = vk::PrimitiveTopology::eTriangleList };
+                vk::PipelineViewportStateCreateInfo viewportState{ .viewportCount = 1, .scissorCount = 1 };
+                std::array<vk::DynamicState, 2> dynStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+                vk::PipelineDynamicStateCreateInfo dynamicState{ .dynamicStateCount = 2, .pDynamicStates = dynStates.data() };
+                vk::PipelineRasterizationStateCreateInfo rasterizer{ .polygonMode = vk::PolygonMode::eFill, .cullMode = vk::CullModeFlagBits::eNone, .lineWidth = 1.0f };
+                vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1 };
+                vk::PipelineDepthStencilStateCreateInfo depthStencil{ .depthTestEnable = vk::False, .depthWriteEnable = vk::False };
+                vk::PipelineColorBlendAttachmentState blendAttach{
+                    .blendEnable = vk::False,
+                    .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
+                };
+                vk::PipelineColorBlendStateCreateInfo colorBlending{ .attachmentCount = 1, .pAttachments = &blendAttach };
+                vk::PipelineRenderingCreateInfo renderingInfo{ .colorAttachmentCount = 1, .pColorAttachmentFormats = &targetFormat };
+
+                return device.createGraphicsPipeline(nullptr, vk::GraphicsPipelineCreateInfo{
+                    .pNext = &renderingInfo,
+                    .stageCount = 2,
+                    .pStages = stages.data(),
+                    .pVertexInputState = &vertexInput,
+                    .pInputAssemblyState = &inputAssembly,
+                    .pViewportState = &viewportState,
+                    .pRasterizationState = &rasterizer,
+                    .pMultisampleState = &multisampling,
+                    .pDepthStencilState = &depthStencil,
+                    .pColorBlendState = &colorBlending,
+                    .pDynamicState = &dynamicState,
+                    .layout = *m_BloomPipelineLayout
+                    });
+                };
+
+            m_BloomExtractPipeline = buildFullscreenPipeline("PSBrightExtract", vk::Format::eR16G16B16A16Sfloat);
+            m_BloomBlurPipeline = buildFullscreenPipeline("PSBlur", vk::Format::eR16G16B16A16Sfloat);
+            m_BloomCompositePipeline = buildFullscreenPipeline("PSComposite", swapChainImageFormat);
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "[BLOOM ERROR]: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    bool SceneRenderer::CreateSSAOPipelines()
+    {
+        try {
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
+
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/SSAO.spv");
+            vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
+
+            std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {
+                vk::DescriptorSetLayoutBinding{ 0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment },
+                vk::DescriptorSetLayoutBinding{ 1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment }
+            };
+            m_SSAOSetLayout = device.createDescriptorSetLayout({ .bindingCount = 2, .pBindings = bindings.data() });
+
+            std::array<vk::DescriptorSetLayout, 2> setLayouts = {
+                *lowLevelRenderer.vulkanCommandBuffer->descriptorSetLayout, // Set 0: Global UBO
+                *m_SSAOSetLayout                                            // Set 1: Position + Normal
+            };
+            m_SSAOPipelineLayout = device.createPipelineLayout({
+                .setLayoutCount = 2,
+                .pSetLayouts = setLayouts.data()
+                });
+
+            auto buildPass = [&](const char* fragEntry) -> vk::raii::Pipeline {
+                std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+                    vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eVertex,   .module = *shaderModule, .pName = "VSMain" },
+                    vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eFragment, .module = *shaderModule, .pName = fragEntry }
+                };
+                vk::PipelineVertexInputStateCreateInfo vertexInput;
+                vk::PipelineInputAssemblyStateCreateInfo inputAssembly{ .topology = vk::PrimitiveTopology::eTriangleList };
+                vk::PipelineViewportStateCreateInfo viewportState{ .viewportCount = 1, .scissorCount = 1 };
+                std::array<vk::DynamicState, 2> dynStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+                vk::PipelineDynamicStateCreateInfo dynamicState{ .dynamicStateCount = 2, .pDynamicStates = dynStates.data() };
+                vk::PipelineRasterizationStateCreateInfo rasterizer{ .polygonMode = vk::PolygonMode::eFill, .cullMode = vk::CullModeFlagBits::eNone, .lineWidth = 1.0f };
+                vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1 };
+                vk::PipelineDepthStencilStateCreateInfo depthStencil{ .depthTestEnable = vk::False, .depthWriteEnable = vk::False };
+                vk::PipelineColorBlendAttachmentState blendAttach{
+                    .blendEnable = vk::False,
+                    .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
+                };
+                vk::PipelineColorBlendStateCreateInfo colorBlending{ .attachmentCount = 1, .pAttachments = &blendAttach };
+                vk::Format format = vk::Format::eR8Unorm;
+                vk::PipelineRenderingCreateInfo renderingInfo{ .colorAttachmentCount = 1, .pColorAttachmentFormats = &format };
+
+                return device.createGraphicsPipeline(nullptr, vk::GraphicsPipelineCreateInfo{
+                    .pNext = &renderingInfo,
+                    .stageCount = 2,
+                    .pStages = stages.data(),
+                    .pVertexInputState = &vertexInput,
+                    .pInputAssemblyState = &inputAssembly,
+                    .pViewportState = &viewportState,
+                    .pRasterizationState = &rasterizer,
+                    .pMultisampleState = &multisampling,
+                    .pDepthStencilState = &depthStencil,
+                    .pColorBlendState = &colorBlending,
+                    .pDynamicState = &dynamicState,
+                    .layout = *m_SSAOPipelineLayout
+                    });
+                };
+
+            m_SSAOPipeline = buildPass("PSSSAO");
+            m_SSAOBlurPipeline = buildPass("PSBlur");
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "[SSAO ERROR]: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    bool SceneRenderer::CreateParticlePipelines()
+    {
+        try {
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
+
+            // 1. Allocate Particle SSBO in fast eDeviceLocal VRAM and zero-initialized Particle SSBO
+            vk::DeviceSize bufferSize = MAX_PARTICLES * sizeof(ParticleData);
+            std::tie(m_ParticleBuffer, m_ParticleMemory) = lowLevelRenderer.vulkanCommandBuffer->CreateBuffer(
+                bufferSize,
+                vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
+                vk::MemoryPropertyFlagBits::eDeviceLocal
+            );
+
+            // Zero-fill on the GPU and synchronize transfer write -> compute read/write before first dispatch
+            vk::raii::CommandBuffer initCmd = lowLevelRenderer.vulkanCommandBuffer->BeginSingleTimeCommands();
+            initCmd.fillBuffer(*m_ParticleBuffer, 0, bufferSize, 0);
+
+            vk::BufferMemoryBarrier fillBarrier{
+                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = *m_ParticleBuffer,
+                .offset = 0,
+                .size = bufferSize
+            };
+            initCmd.pipelineBarrier(
+                vk::PipelineStageFlagBits::eTransfer,
+                vk::PipelineStageFlagBits::eComputeShader,
+                {}, {}, { fillBarrier }, {}
+            );
+
+            lowLevelRenderer.vulkanCommandBuffer->EndSingleTimeCommands(std::move(initCmd));
+
+            // 2. Descriptor Set Layout + Set (Binding 0 = RWStructuredBuffer<Particle>) binding 0 (eCompute) and binding 1 (eVertex)
+            vk::DescriptorPoolSize poolSize{ vk::DescriptorType::eStorageBuffer, 2 };
+            m_ParticleDescriptorPool = device.createDescriptorPool({
+                .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+                .maxSets = 1,
+                .poolSizeCount = 1,
+                .pPoolSizes = &poolSize
+                });
+
+            std::array<vk::DescriptorSetLayoutBinding, 2> ssboBindings = {
+                vk::DescriptorSetLayoutBinding{ 0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute },
+                vk::DescriptorSetLayoutBinding{ 1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eVertex }
+            };
+            m_ParticleSetLayout = device.createDescriptorSetLayout({ .bindingCount = 2, .pBindings = ssboBindings.data() });
+
+            vk::DescriptorSetLayout layoutHandle = *m_ParticleSetLayout;
+            m_ParticleSet = std::move(device.allocateDescriptorSets({
+                .descriptorPool = *m_ParticleDescriptorPool,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &layoutHandle
+                }).front());
+
+            vk::DescriptorBufferInfo bufInfo{ *m_ParticleBuffer, 0, bufferSize };
+            std::array<vk::WriteDescriptorSet, 2> writes = {
+                vk::WriteDescriptorSet{ .dstSet = *m_ParticleSet, .dstBinding = 0, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eStorageBuffer, .pBufferInfo = &bufInfo },
+                vk::WriteDescriptorSet{ .dstSet = *m_ParticleSet, .dstBinding = 1, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eStorageBuffer, .pBufferInfo = &bufInfo }
+            };
+            device.updateDescriptorSets(writes, {});
+
+            // 3. Pipeline Layout (shared by Compute & Billboard Graphics pipelines)
+            vk::PushConstantRange pushRange{
+                .stageFlags = vk::ShaderStageFlagBits::eCompute | vk::ShaderStageFlagBits::eVertex,
+                .offset = 0,
+                .size = sizeof(ParticlePushConstants)
+            };
+
+            std::array<vk::DescriptorSetLayout, 2> particleLayouts = {
+                *lowLevelRenderer.vulkanCommandBuffer->descriptorSetLayout, // Set 0: Global UBO (view, proj)
+                *m_ParticleSetLayout                                        // Set 1: particlesOut + particlesIn
+            };
+            m_ParticlePipelineLayout = device.createPipelineLayout({
+                .setLayoutCount = 2,
+                .pSetLayouts = particleLayouts.data(),
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &pushRange
+            });
+
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/Particles.spv");
+            vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
+
+            // 4. Compute Pipeline (CSMain)
+            m_ParticleComputePipeline = device.createComputePipeline(nullptr, vk::ComputePipelineCreateInfo{
+                .stage = { .stage = vk::ShaderStageFlagBits::eCompute, .module = *shaderModule, .pName = "CSMain" },
+                .layout = *m_ParticlePipelineLayout
+                });
+
+            // 5. Additive Billboard Graphics Pipeline (VSMain + PSMain -> HDRColor)
+            std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+                vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eVertex,   .module = *shaderModule, .pName = "VSMain" },
+                vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eFragment, .module = *shaderModule, .pName = "PSMain" }
+            };
+            vk::PipelineVertexInputStateCreateInfo vertexInput;
+            vk::PipelineInputAssemblyStateCreateInfo inputAssembly{ .topology = vk::PrimitiveTopology::eTriangleList };
+            vk::PipelineViewportStateCreateInfo viewportState{ .viewportCount = 1, .scissorCount = 1 };
+            std::array<vk::DynamicState, 2> dynStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+            vk::PipelineDynamicStateCreateInfo dynamicState{ .dynamicStateCount = 2, .pDynamicStates = dynStates.data() };
+            vk::PipelineRasterizationStateCreateInfo rasterizer{ .polygonMode = vk::PolygonMode::eFill, .cullMode = vk::CullModeFlagBits::eNone, .lineWidth = 1.0f };
+            vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1 };
+            vk::PipelineDepthStencilStateCreateInfo depthStencil{ .depthTestEnable = vk::True, .depthWriteEnable = vk::False, .depthCompareOp = vk::CompareOp::eLess };
+
+            vk::PipelineColorBlendAttachmentState additiveBlend{
+                .blendEnable = vk::True,
+                .srcColorBlendFactor = vk::BlendFactor::eSrcAlpha,
+                .dstColorBlendFactor = vk::BlendFactor::eOne,
+                .colorBlendOp = vk::BlendOp::eAdd,
+                .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+                .dstAlphaBlendFactor = vk::BlendFactor::eOne,
+                .alphaBlendOp = vk::BlendOp::eAdd,
+                .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
+            };
+            vk::PipelineColorBlendStateCreateInfo colorBlending{ .attachmentCount = 1, .pAttachments = &additiveBlend };
+            vk::Format hdrFormat = vk::Format::eR16G16B16A16Sfloat;
+            vk::PipelineRenderingCreateInfo renderingInfo{ .colorAttachmentCount = 1, .pColorAttachmentFormats = &hdrFormat, .depthAttachmentFormat = findDepthFormat() };
+
+            m_ParticleRenderPipeline = device.createGraphicsPipeline(nullptr, vk::GraphicsPipelineCreateInfo{
+                .pNext = &renderingInfo,
+                .stageCount = 2,
+                .pStages = stages.data(),
+                .pVertexInputState = &vertexInput,
+                .pInputAssemblyState = &inputAssembly,
+                .pViewportState = &viewportState,
+                .pRasterizationState = &rasterizer,
+                .pMultisampleState = &multisampling,
+                .pDepthStencilState = &depthStencil,
+                .pColorBlendState = &colorBlending,
+                .pDynamicState = &dynamicState,
+                .layout = *m_ParticlePipelineLayout
+                });
+
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "[PARTICLE PIPELINE ERROR]: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    void SceneRenderer::DispatchAndRenderParticles(vk::raii::CommandBuffer& cmd, float deltaTime)
+    {
+        if (!*m_ParticleComputePipeline || !*m_ParticleRenderPipeline || !*m_ParticleSet) return;
+
+        // 1. Find active camera & optional Car emitter position
+        CameraComponent* activeCam = nullptr;
+
+        Entity* emitterEntity = nullptr;
+        ParticleEmitterComponent* emitterComp = nullptr;
+        for (Entity* entity : Entity::GetActiveSceneEntities()) {
+            if (!entity || !entity->IsActive()) continue;
+            if (!activeCam) activeCam = entity->GetComponent<CameraComponent>();
+            if (auto* pe = entity->GetComponent<ParticleEmitterComponent>(); pe && pe->Enabled) {
+                emitterEntity = entity;
+                emitterComp = pe;
+            }
+        }
+        if (!activeCam || !emitterEntity || !emitterComp) {
+            m_HasActiveParticles = false;
+            return;
+        }
+        m_HasActiveParticles = true;
+
+        glm::mat4 worldMat = glm::mat4(1.0f);
+        glm::quat worldRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        if (auto* t = emitterEntity->GetComponent<TransformComponent>()) {
+            worldMat = t->GetWorldTransformMatrix();
+            worldRot = t->GetRotation();
+        }
+
+        glm::vec3 worldSpawn = glm::vec3(worldMat * glm::vec4(emitterComp->Offset, 1.0f));
+        glm::vec3 worldDir = glm::normalize(worldRot * emitterComp->Direction);
+
+        float dt = std::clamp(deltaTime, 0.001f, 0.05f);
+        static float totalTime = 0.0f;
+        totalTime += dt;
+
+        glm::mat4 view = activeCam->GetViewMatrix();
+        glm::mat4 proj = activeCam->GetProjectionMatrix();
+        glm::mat4 invView = glm::inverse(view);
+
+        ParticlePushConstants pc{};
+        pc.emitterPos = glm::vec4(worldSpawn, dt);
+        pc.emitterDir = glm::vec4(worldDir, emitterComp->Spread);
+        pc.particleCol = glm::vec4(emitterComp->Color * emitterComp->HDRIntensity, emitterComp->Gravity);
+        pc.lifeAndSize = glm::vec4(emitterComp->MinLife, emitterComp->MaxLife, emitterComp->InitialSpeed, emitterComp->ParticleSize);
+        pc.camRight = glm::vec4(glm::vec3(invView[0]), totalTime);
+        pc.camUp = glm::vec4(glm::vec3(invView[1]), static_cast<float>(emitterComp->ActiveParticles));
+
+        // 2. Dispatch Compute Shader (4096 / 256 = 16 thread groups)
+        auto& lowLevelRenderer = VulkanRenderer::Get();
+        auto currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
+
+        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *m_ParticleComputePipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *m_ParticlePipelineLayout, 0,
+            { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame], *m_ParticleSet }, {});
+        m_LastParticlePC = pc;
+        cmd.pushConstants(*m_ParticlePipelineLayout,
+            vk::ShaderStageFlagBits::eCompute | vk::ShaderStageFlagBits::eVertex,
+            0, sizeof(ParticlePushConstants), &pc);
+        cmd.dispatch(MAX_PARTICLES / 256, 1, 1);
+
+        // 3. Synchronize SSBO writes from Compute Shader -> Vertex Shader reads
+        vk::BufferMemoryBarrier ssboBarrier{
+            .srcAccessMask = vk::AccessFlagBits::eShaderWrite,
+            .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = *m_ParticleBuffer,
+            .offset = 0,
+            .size = VK_WHOLE_SIZE
+        };
+        cmd.pipelineBarrier(
+            vk::PipelineStageFlagBits::eComputeShader,
+            vk::PipelineStageFlagBits::eVertexShader,
+            {}, {}, { ssboBarrier }, {}
+        );
+    }
+
+    void SceneRenderer::SetEnvironmentHDRI(const std::string& path)
+    {
+        device.waitIdle();
+        auto newEnv = std::make_shared<Texture>("active_env_cubemap");
+        if (path.empty() || !newEnv->LoadHDRI(path, 512)) {
+            newEnv->CreateProceduralStudioCubemap(64);
+            m_ActiveHDRIPath = "";
+        }
+        else {
+            m_ActiveHDRIPath = path;
+        }
+        m_EnvCubemap = std::move(newEnv);
+        m_DeferredGBufferSet = nullptr; // Force LightingPass to rebind the new cubemap on next frame
+    }
+
+    bool SceneRenderer::CreateSSRPipeline()
+    {
+        try {
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
+
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/SSR.spv");
+            vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
+
+            std::array<vk::DescriptorSetLayoutBinding, 4> bindings = {
+                vk::DescriptorSetLayoutBinding{ 0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment },
+                vk::DescriptorSetLayoutBinding{ 1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment },
+                vk::DescriptorSetLayoutBinding{ 2, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment },
+                vk::DescriptorSetLayoutBinding{ 3, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment }
+            };
+            m_SSRSetLayout = device.createDescriptorSetLayout({ .bindingCount = 4, .pBindings = bindings.data() });
+
+            std::array<vk::DescriptorSetLayout, 2> setLayouts = {
+                *lowLevelRenderer.vulkanCommandBuffer->descriptorSetLayout, // Set 0: Global UBO
+                * m_SSRSetLayout                                            // Set 1: Position + Normal
+            };
+
+
+            vk::PushConstantRange pushRange{
+                .stageFlags = vk::ShaderStageFlagBits::eFragment,
+                .offset = 0,
+                .size = sizeof(SSRPushConstants)
+            };
+
+            m_SSRPipelineLayout = device.createPipelineLayout({
+                .setLayoutCount = 2,
+                .pSetLayouts = setLayouts.data(),
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &pushRange
+            });
+
+            auto buildPass = [&](const char* fragEntry) -> vk::raii::Pipeline {
+                std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+                    vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eVertex,   .module = *shaderModule, .pName = "VSMain" },
+                    vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eFragment, .module = *shaderModule, .pName = fragEntry }
+                };
+                vk::PipelineVertexInputStateCreateInfo vertexInput;
+                vk::PipelineInputAssemblyStateCreateInfo inputAssembly{ .topology = vk::PrimitiveTopology::eTriangleList };
+                vk::PipelineViewportStateCreateInfo viewportState{ .viewportCount = 1, .scissorCount = 1 };
+                std::array<vk::DynamicState, 2> dynStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+                vk::PipelineDynamicStateCreateInfo dynamicState{ .dynamicStateCount = 2, .pDynamicStates = dynStates.data() };
+                vk::PipelineRasterizationStateCreateInfo rasterizer{ .polygonMode = vk::PolygonMode::eFill, .cullMode = vk::CullModeFlagBits::eNone, .lineWidth = 1.0f };
+                vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1 };
+                vk::PipelineDepthStencilStateCreateInfo depthStencil{ .depthTestEnable = vk::False, .depthWriteEnable = vk::False };
+                vk::PipelineColorBlendAttachmentState blendAttach{
+                    .blendEnable = vk::False,
+                    .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
+                };
+                vk::PipelineColorBlendStateCreateInfo colorBlending{ .attachmentCount = 1, .pAttachments = &blendAttach };
+                vk::Format format = vk::Format::eR16G16B16A16Sfloat;
+                vk::PipelineRenderingCreateInfo renderingInfo{ .colorAttachmentCount = 1, .pColorAttachmentFormats = &format };
+
+                return device.createGraphicsPipeline(nullptr, vk::GraphicsPipelineCreateInfo{
+                    .pNext = &renderingInfo,
+                    .stageCount = 2,
+                    .pStages = stages.data(),
+                    .pVertexInputState = &vertexInput,
+                    .pInputAssemblyState = &inputAssembly,
+                    .pViewportState = &viewportState,
+                    .pRasterizationState = &rasterizer,
+                    .pMultisampleState = &multisampling,
+                    .pDepthStencilState = &depthStencil,
+                    .pColorBlendState = &colorBlending,
+                    .pDynamicState = &dynamicState,
+                    .layout = *m_SSRPipelineLayout
+                    });
+                };
+
+            m_SSRPipeline = buildPass("PSMain");
+            return true;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "[SSR ERROR]: " << e.what() << std::endl;
             return false;
         }
     }
@@ -674,43 +1546,45 @@ namespace Proto
         // ...
     }
 
-    void SceneRenderer::RenderModelNode(Node* node, const glm::mat4& parentMatrix, vk::raii::CommandBuffer& cmd, const Model* model, CameraComponent* camera)
+    void SceneRenderer::RenderModelNode(Node* node, const glm::mat4& parentMatrix, vk::raii::CommandBuffer& cmd,
+        const Model* model, CameraComponent* camera, bool renderTransparentOnly, Entity* ownerEntity)
     {
         if (!node) return;
 
         glm::mat4 globalMatrix = parentMatrix * node->getLocalMatrix();
 
         if (node->mesh && node->mesh->IsLoaded()) {
-            auto& lowLevelRenderer = VulkanRenderer::Get();
-            uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
-
-            // 🟩 Forward the global matrix straight to the material push constants block!
-            pushMaterialProperties(*cmd, model, node->materialIndex, globalMatrix);
-
             auto& material = const_cast<Model*>(model)->materials[node->materialIndex];
+            bool isTransparent = (material.alphaMode == AlphaMode::BLEND);
 
-            // Bind and draw
-            VkDescriptorSet set0 = !lowLevelRenderer.vulkanCommandBuffer->descriptorSets.empty() ?
-                *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame] : VK_NULL_HANDLE;
-            VkDescriptorSet set1 = *material.descriptorSet;
+            if (isTransparent == renderTransparentOnly) {
+                auto& lowLevelRenderer = VulkanRenderer::Get();
+                uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
 
-            if (set0 != VK_NULL_HANDLE && set1 != VK_NULL_HANDLE) {
-                VkDescriptorSet rawSets[] = { set0, set1 };
-                vk::ArrayProxy<const vk::DescriptorSet> setsProxy(2, reinterpret_cast<const vk::DescriptorSet*>(rawSets));
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrPipelineLayout, 0, setsProxy, {});
+                pushMaterialProperties(*cmd, model, node->materialIndex, globalMatrix, ownerEntity);
+
+                VkDescriptorSet set0 = !lowLevelRenderer.vulkanCommandBuffer->descriptorSets.empty() ?
+                    *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame] : VK_NULL_HANDLE;
+                VkDescriptorSet set1 = *material.descriptorSet;
+
+                if (set0 != VK_NULL_HANDLE && set1 != VK_NULL_HANDLE) {
+                    VkDescriptorSet rawSets[] = { set0, set1 };
+                    vk::ArrayProxy<const vk::DescriptorSet> setsProxy(2, reinterpret_cast<const vk::DescriptorSet*>(rawSets));
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrPipelineLayout, 0, setsProxy, {});
+                }
+                else if (set0 != VK_NULL_HANDLE) {
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrPipelineLayout, 0, { vk::DescriptorSet(set0) }, {});
+                }
+
+                cmd.bindVertexBuffers(0, { *node->mesh->GetVertexBuffer() }, { 0 });
+                cmd.bindIndexBuffer(*node->mesh->GetIndexBuffer(), 0, vk::IndexType::eUint32);
+                cmd.drawIndexed(node->mesh->GetIndexCount(), 1, 0, 0, 0);
             }
-            else if (set0 != VK_NULL_HANDLE) {
-                // 🟩 FALLBACK: If set1 is missing, bind just Set 0 (UBO) so geometry still renders in solid color!
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrPipelineLayout, 0, { vk::DescriptorSet(set0) }, {});
-            }
-
-            cmd.bindVertexBuffers(0, { *node->mesh->GetVertexBuffer() }, { 0 });
-            cmd.bindIndexBuffer(*node->mesh->GetIndexBuffer(), 0, vk::IndexType::eUint32);
-            cmd.drawIndexed(node->mesh->GetIndexCount(), 1, 0, 0, 0);
         }
 
+        // Still traverse children, but skip drawing BLEND geometry in the opaque G-Buffer pass
         for (auto child : node->children) {
-            RenderModelNode(child, globalMatrix, cmd, model, camera);
+            RenderModelNode(child, globalMatrix, cmd, model, camera, renderTransparentOnly, ownerEntity);
         }
     }
 
@@ -819,7 +1693,7 @@ namespace Proto
         cullingSystem->CullScene(Entity::GetActiveSceneEntities());
         const auto& visibleEntities = cullingSystem->GetVisibleEntities();
 
-        // FIXED DISCONNECT: Forward drawing execution directly to your cached SceneRenderer handle pointer!
+        // Forward drawing execution directly to your cached SceneRenderer handle pointer!
         // This forces your object tree to bind pipelines, update UBO bindings, and stream transforms.
         sceneRenderer->Render(visibleEntities, commandBuffer, imageIndex);
     }
@@ -847,12 +1721,9 @@ namespace Proto
         uint32_t width = swapchainSubsystem->swapChainExtent.width;
         uint32_t height = swapchainSubsystem->swapChainExtent.height;
 
-        // 🟩 FIX A: Fetch the real raw backbuffer image corresponding to this frame slot
-        // (We extract this out using the imageIndex passed down from your draw frame loops)
-        // Note: If imageIndex isn't tracked here, pull it safely from lowLevelRenderer or cached indices
         vk::Image swapchainBackbufferImage = swapchainSubsystem->swapChainImages[imageIndex];
 
-        // 🟩 FIX B: TRANSITION THE BACKBUFFER FROM PRESENT/UNDEFINED TO WRITABLE ATTACHMENT OPTIMAL
+        // TRANSITION THE BACKBUFFER FROM PRESENT/UNDEFINED TO WRITABLE ATTACHMENT OPTIMAL
         // This bridges the gap and satisfies the exact driver requirements blocking your display output!
         vk::ImageMemoryBarrier barrierToComposeColor{
             .srcAccessMask = vk::AccessFlagBits::eNone,
@@ -873,7 +1744,7 @@ namespace Proto
 
         // Configure your color attachment point to write directly to the hardware backbuffer view
         vk::RenderingAttachmentInfoKHR colorAttachment;
-        colorAttachment.setImageView(swapchainSubsystem->swapChainImageViews[imageIndex]) // 🟩 Output straight onto backbuffer!
+        colorAttachment.setImageView(swapchainSubsystem->swapChainImageViews[imageIndex]) // Output straight onto backbuffer!
             .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
             .setLoadOp(vk::AttachmentLoadOp::eClear) // Clear out previous background tracks safely
             .setStoreOp(vk::AttachmentStoreOp::eStore)
@@ -959,7 +1830,7 @@ namespace Proto
             for (auto entity : allEntities) {
                 if (!entity || !entity->IsActive()) continue;
 
-                // FIXED 1: Support modern ModelComponents in the fallback path
+                // Support modern ModelComponents in the fallback path
                 if (entity->GetComponent<ModelComponent>() || entity->GetComponent<MeshComponent>()) {
                     visibleEntities.push_back(entity);
                 }
@@ -971,7 +1842,7 @@ namespace Proto
         for (auto entity : allEntities) {
             if (!entity || !entity->IsActive()) continue;
 
-            // FIXED 2: Check for ModelComponent first
+            // Check for ModelComponent first
             auto modelComponent = entity->GetComponent<ModelComponent>();
             auto meshComponent = entity->GetComponent<MeshComponent>();
 
@@ -1093,15 +1964,6 @@ namespace Proto
             }
         }
 
-        // Automatic Synchronization Object Creation. Generate semaphores for all dependencies identified during analysis
-        //for (size_t i = 0; i < passes.size(); ++i) {
-        //    for (auto dep : dependencies[i]) {
-        //        // Create a GPU semaphore for this dependency relationship. The dependent pass will wait on this semaphore before executing
-        //        semaphores.emplace_back(device.createSemaphore({}));
-        //        semaphoreSignalWaitPairs.emplace_back(dep, i);    // (producer, consumer) pair
-        //    }
-        //}
-
         // Physical Resource Allocation and Creation. Transform resource descriptions into actual GPU objects
         for (auto& [name, resource] : resources) {
             // Configure image creation parameters based on resource description
@@ -1131,7 +1993,7 @@ namespace Proto
             resource.image.bindMemory(*resource.memory, 0);               // Bind memory to image
 
             // Create image view for shader access
-            vk::ImageAspectFlags aspect = (name == "Depth") ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor;
+            vk::ImageAspectFlags aspect = (name == "Depth" || name == "ShadowMap") ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor;
             vk::ImageViewCreateInfo viewInfo;
             viewInfo.setImage(*resource.image)                          // Reference the created image
                 .setViewType(vk::ImageViewType::e2D)                    // 2D view type
@@ -1150,13 +2012,13 @@ namespace Proto
             // 1. Transition input resources to shader-readable layouts
             for (const auto& input : pass.inputs) {
                 auto& resource = resources[input];
-                bool isDepth = (resource.name == "Depth");
+                bool isDepth = (resource.name == "Depth" || resource.name == "ShadowMap");
 
                 vk::ImageLayout targetReadLayout = isDepth
                     ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
                     : vk::ImageLayout::eShaderReadOnlyOptimal;
 
-                // 🟩 FIX: Transition from resource.finalLayout (what the producer pass wrote), NOT initialLayout (eUndefined)!
+                // Transition from resource.finalLayout (what the producer pass wrote), NOT initialLayout (eUndefined)!
                 // Using eUndefined discards the rendered G-Buffer contents!
                 vk::ImageMemoryBarrier barrier;
                 barrier.setOldLayout(resource.finalLayout)
@@ -1181,9 +2043,9 @@ namespace Proto
             // 2. Transition output resources to render target layouts
             for (const auto& output : pass.outputs) {
                 auto& resource = resources[output];
-                bool isDepth = (resource.name == "Depth");
+                bool isDepth = (resource.name == "Depth" || resource.name == "ShadowMap");
 
-                // 🟩 FIXED: Dynamically route the proper layout types!
+                // Dynamically route the proper layout types!
                 vk::ImageLayout targetLayout = isDepth ? vk::ImageLayout::eDepthStencilAttachmentOptimal : vk::ImageLayout::eColorAttachmentOptimal;
                 vk::AccessFlags targetAccess = isDepth ? vk::AccessFlagBits::eDepthStencilAttachmentWrite : vk::AccessFlagBits::eColorAttachmentWrite;
 
@@ -1213,7 +2075,7 @@ namespace Proto
             // 4. Transition output resources to their final required layouts
             for (const auto& output : pass.outputs) {
                 auto& resource = resources[output];
-                bool isDepth = (resource.name == "Depth");
+                bool isDepth = (resource.name == "Depth" || resource.name == "ShadowMap");
 
                 vk::ImageLayout currentLayout = isDepth ? vk::ImageLayout::eDepthStencilAttachmentOptimal : vk::ImageLayout::eColorAttachmentOptimal;
                 vk::AccessFlags srcAccess = isDepth ? vk::AccessFlagBits::eDepthStencilAttachmentWrite : vk::AccessFlagBits::eColorAttachmentWrite;
@@ -1285,8 +2147,7 @@ namespace Proto
 
         }
         else {
-            // Handle unsupported transition combinations
-            // Production code would include additional common transition patterns
+            // Handle unsupported transition combinations. Production code would include additional common transition patterns
             throw std::invalid_argument("Unsupported layout transition!");
         }
 
@@ -1326,35 +2187,111 @@ namespace Proto
         // Configure depth buffer for occlusion and depth testing
         // High precision depth enables accurate depth reconstruction in lighting pass
         graph.AddResource("Depth", vk::Format::eD32Sfloat, { width, height },
-            vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eInputAttachment,
+            vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eInputAttachment | vk::ImageUsageFlagBits::eSampled,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal);
 
-        // Configure final color buffer for the completed lighting result
-        // Standard color format with transfer capability for presentation or post-processing
-        graph.AddResource("FinalColor", vk::Format::eB8G8R8A8Srgb, { width, height },
-            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled,
-            vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferSrcOptimal);
+        graph.AddResource("ShadowMap", vk::Format::eD32Sfloat, { 4096, 4096 },
+            vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal);
 
+        graph.AddResource("GBuffer_Emissive", vk::Format::eR16G16B16A16Sfloat, { width, height },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        graph.AddResource("GBuffer_SurfaceExt", vk::Format::eR8G8B8A8Unorm, { width, height },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eInputAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        graph.AddResource("SSAO_Raw", vk::Format::eR8Unorm, { width, height },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        graph.AddResource("SSAO_Blur", vk::Format::eR8Unorm, { width, height },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        // Configure final color buffer for the completed lighting result. Standard color format with transfer capability for presentation or post-processing
+        graph.AddResource("FinalColor", vk::Format::eB8G8R8A8Srgb, { width, height },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        uint32_t halfW = std::max(1u, width / 2);
+        uint32_t halfH = std::max(1u, height / 2);
+
+        graph.AddResource("HDRColor", vk::Format::eR16G16B16A16Sfloat, { width, height },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        graph.AddResource("SSRColor", vk::Format::eR16G16B16A16Sfloat, { width, height },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        graph.AddResource("FogColor", vk::Format::eR16G16B16A16Sfloat, { width, height },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        graph.AddResource("BloomPing", vk::Format::eR16G16B16A16Sfloat, { halfW, halfH },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        graph.AddResource("BloomPong", vk::Format::eR16G16B16A16Sfloat, { halfW, halfH },
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+            vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        graph.AddPass("ShadowPass",
+            {},
+            { "ShadowMap" },
+            [&graph](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
+            {
+                auto* shadowRes = graph.GetResource("ShadowMap");
+                if (!shadowRes) return;
+
+                vk::RenderingAttachmentInfoKHR depthAttachment;
+                depthAttachment.setImageView(*shadowRes->view)
+                    .setImageLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal)
+                    .setLoadOp(vk::AttachmentLoadOp::eClear)
+                    .setStoreOp(vk::AttachmentStoreOp::eStore)
+                    .setClearValue(vk::ClearDepthStencilValue(1.0f, 0));
+
+                vk::RenderingInfoKHR renderingInfo;
+                renderingInfo.setRenderArea({ { 0, 0 }, { 4096, 4096 } })
+                    .setLayerCount(1)
+                    .setPDepthAttachment(&depthAttachment);
+
+                cmd.beginRendering(renderingInfo);
+
+                auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                glm::mat4 lightSpaceMatrices[4];
+                glm::ivec4 shadowEnabled(0);
+                pbrRenderer.ComputeShadowAtlasMatrices(lightSpaceMatrices, shadowEnabled);
+                if (shadowEnabled.x || shadowEnabled.y || shadowEnabled.z || shadowEnabled.w) {
+                    pbrRenderer.RenderShadowPass(cmd, lightSpaceMatrices, shadowEnabled);
+                }
+
+                cmd.endRendering();
+            });
 
         // Configure geometry pass for G - Buffer population
         // This pass renders all geometry and stores intermediate data for lighting calculations
         graph.AddPass("GeometryPass",
             {},                                                        // No input dependencies - first pass in pipeline
-            { "GBuffer_Position", "GBuffer_Normal", "GBuffer_Albedo", "Depth" },  // Outputs all G-Buffer components
+            { "GBuffer_Position", "GBuffer_Normal", "GBuffer_Albedo", "GBuffer_Emissive", "GBuffer_SurfaceExt", "Depth" },  // Outputs all G-Buffer components
             [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
             {
                 // 1. Fetch the compiled resource descriptors directly from your rendergraph map pointers
                 auto* posRes = graph.GetResource("GBuffer_Position");
                 auto* normalRes = graph.GetResource("GBuffer_Normal");
                 auto* albedoRes = graph.GetResource("GBuffer_Albedo");
+                auto* emissiveRes = graph.GetResource("GBuffer_Emissive");
+                auto* surfaceRes = graph.GetResource("GBuffer_SurfaceExt");
                 auto* depthRes = graph.GetResource("Depth");
 
                 // Ensure resources are compiled before setting up attachment views
-                if (posRes && normalRes && albedoRes && depthRes)
+                if (posRes && normalRes && albedoRes && emissiveRes && depthRes)
                 {
                     // Configure multiple render target attachments for G-Buffer output
                     // Each attachment corresponds to a different geometric property
-                    std::array<vk::RenderingAttachmentInfoKHR, 3> colorAttachments;
+                    std::array<vk::RenderingAttachmentInfoKHR, 5> colorAttachments;
 
                     // Configure position attachment - world space vertex positions
                     vk::ClearValue clearColor = vk::ClearColorValue(std::array<float, 4>{ 0.1f, 0.1f, 0.15f, 1.0f });
@@ -1363,14 +2300,14 @@ namespace Proto
                         .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)  // Optimal for writes
                         .setLoadOp(vk::AttachmentLoadOp::eClear)       // Clear to known state
                         .setStoreOp(vk::AttachmentStoreOp::eStore)    // Preserve for lighting pass
-                        .setClearValue(clearColor);
+                        .setClearValue(vk::ClearColorValue(std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 0.0f }));
 
                     // Configure normal attachment - surface normals in world space
                     colorAttachments[1].setImageView(*normalRes->view)      // Target normal buffer
                         .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
                         .setLoadOp(vk::AttachmentLoadOp::eClear)       // Clear to default normal
                         .setStoreOp(vk::AttachmentStoreOp::eStore)    // Preserve for lighting
-                        .setClearValue(clearColor);
+                        .setClearValue(vk::ClearColorValue(std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 0.0f }));
 
                     // Configure albedo attachment - surface color and material properties
                     colorAttachments[2].setImageView(*albedoRes->view)      // Target albedo buffer
@@ -1378,6 +2315,18 @@ namespace Proto
                         .setLoadOp(vk::AttachmentLoadOp::eClear)       // Clear to default color
                         .setStoreOp(vk::AttachmentStoreOp::eStore)    // Preserve for lighting
                         .setClearValue(clearColor);
+
+                    colorAttachments[3].setImageView(*emissiveRes->view)
+                        .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                        .setLoadOp(vk::AttachmentLoadOp::eClear)
+                        .setStoreOp(vk::AttachmentStoreOp::eStore)
+                        .setClearValue(vk::ClearColorValue(std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 0.0f }));
+
+                    colorAttachments[4].setImageView(*surfaceRes->view)
+                        .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                        .setLoadOp(vk::AttachmentLoadOp::eClear)
+                        .setStoreOp(vk::AttachmentStoreOp::eStore)
+                        .setClearValue(vk::ClearColorValue(std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 0.0f }));
 
                     // Configure depth attachment for occlusion culling
                     vk::RenderingAttachmentInfoKHR depthAttachment;
@@ -1402,7 +2351,7 @@ namespace Proto
                 // Each draw call populates position, normal, and albedo for visible fragments
                 // ... (geometry rendering implementation would go here)
                 
-                // 🟩 VUID FIX: Apply dynamic state properties explicitly inside the open pass context!
+                // Apply dynamic state properties explicitly inside the open pass context!
                 float fWidth = static_cast<float>(width);
                 float fHeight = static_cast<float>(height);
                 cmd.setViewport(0, { vk::Viewport(0.0f, 0.0f, fWidth, fHeight, 0.0f, 1.0f) });
@@ -1416,14 +2365,103 @@ namespace Proto
                 cmd.endRendering();                                             // Complete G-Buffer population
             });
 
+        graph.AddPass("SSAOPass",
+            { "GBuffer_Position", "GBuffer_Normal" },
+            { "SSAO_Blur" },
+            [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
+            {
+                auto* posRes = graph.GetResource("GBuffer_Position");
+                auto* normRes = graph.GetResource("GBuffer_Normal");
+                auto* rawRes = graph.GetResource("SSAO_Raw");
+                auto* blurRes = graph.GetResource("SSAO_Blur");
+                if (!posRes || !normRes || !rawRes || !blurRes) return;
+
+                auto& lowLevelRenderer = VulkanRenderer::Get();
+                auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
+                auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
+                vk::Sampler sampler = lowLevelRenderer.imGui->GetSampler();
+
+                auto allocateSSAOSet = [&](vk::raii::DescriptorSet& set, vk::ImageView v0, vk::ImageView v1) {
+                    if (*set) return;
+                    vk::DescriptorSetLayout layout = *pbrRenderer.m_SSAOSetLayout;
+                    set = std::move(logicalDevice.allocateDescriptorSets({
+                        .descriptorPool = *lowLevelRenderer.vulkanCommandBuffer->descriptorPool,
+                        .descriptorSetCount = 1,
+                        .pSetLayouts = &layout
+                        }).front());
+
+                    vk::DescriptorImageInfo i0{ sampler, v0, vk::ImageLayout::eShaderReadOnlyOptimal };
+                    vk::DescriptorImageInfo i1{ sampler, v1, vk::ImageLayout::eShaderReadOnlyOptimal };
+                    std::array<vk::WriteDescriptorSet, 2> writes = {
+                        vk::WriteDescriptorSet{ .dstSet = *set, .dstBinding = 0, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &i0 },
+                        vk::WriteDescriptorSet{ .dstSet = *set, .dstBinding = 1, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &i1 }
+                    };
+                    logicalDevice.updateDescriptorSets(writes, {});
+                    };
+
+                allocateSSAOSet(pbrRenderer.m_SSAOSet, *posRes->view, *normRes->view);
+                allocateSSAOSet(pbrRenderer.m_SSAOBlurSet, *rawRes->view, *rawRes->view);
+
+                vk::Viewport vp(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f);
+                vk::Rect2D scissor({ 0, 0 }, { width, height });
+
+                // 1. Render SSAO_Raw
+                vk::ImageMemoryBarrier rawToColor{
+                    .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                    .oldLayout = vk::ImageLayout::eUndefined,
+                    .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                    .image = *rawRes->image,
+                    .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+                };
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, { rawToColor });
+
+                vk::RenderingAttachmentInfoKHR rawAttach;
+                rawAttach.setImageView(*rawRes->view).setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                    .setLoadOp(vk::AttachmentLoadOp::eDontCare).setStoreOp(vk::AttachmentStoreOp::eStore);
+
+                cmd.beginRendering({ .renderArea = scissor, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &rawAttach });
+                cmd.setViewport(0, { vp });
+                cmd.setScissor(0, { scissor });
+                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_SSAOPipeline);
+                std::array<vk::DescriptorSet, 2> sets0 = { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame], *pbrRenderer.m_SSAOSet };
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_SSAOPipelineLayout, 0, sets0, {});
+                cmd.draw(3, 1, 0, 0);
+                cmd.endRendering();
+
+                vk::ImageMemoryBarrier rawToRead{
+                    .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                    .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                    .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                    .image = *rawRes->image,
+                    .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+                };
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, { rawToRead });
+
+                // 2. Blur SSAO_Raw -> SSAO_Blur (Rendergraph transitions SSAO_Blur before and after)
+                vk::RenderingAttachmentInfoKHR blurAttach;
+                blurAttach.setImageView(*blurRes->view).setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                    .setLoadOp(vk::AttachmentLoadOp::eDontCare).setStoreOp(vk::AttachmentStoreOp::eStore);
+
+                cmd.beginRendering({ .renderArea = scissor, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &blurAttach });
+                cmd.setViewport(0, { vp });
+                cmd.setScissor(0, { scissor });
+                cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_SSAOBlurPipeline);
+                std::array<vk::DescriptorSet, 2> sets1 = { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame], *pbrRenderer.m_SSAOBlurSet };
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_SSAOPipelineLayout, 0, sets1, {});
+                cmd.draw(3, 1, 0, 0);
+                cmd.endRendering();
+            });
+
         // Configure lighting pass for screen-space illumination calculations
         // This pass reads G-Buffer data and computes final lighting for each pixel
         graph.AddPass("LightingPass",
-            { "GBuffer_Position", "GBuffer_Normal", "GBuffer_Albedo", "Depth" },  // Read all G-Buffer components
-            { "FinalColor" },                                            // Output final lit result
+            { "GBuffer_Position", "GBuffer_Normal", "GBuffer_Albedo", "GBuffer_Emissive", "GBuffer_SurfaceExt", "SSAO_Blur", "ShadowMap" },  // Read all G-Buffer components
+            { "HDRColor" },                                            // Output final lit result
             [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
             {
-                auto* finalRes = graph.GetResource("FinalColor");
+                auto* finalRes = graph.GetResource("HDRColor");
                 // Configure single color output for final lighting result
                 vk::RenderingAttachmentInfoKHR colorAttachment;
                 colorAttachment.setImageView(finalRes->view)             // Target final color buffer
@@ -1447,9 +2485,9 @@ namespace Proto
                 // Fragment shader reads G-Buffer textures and computes lighting for each pixel
                 // All scene lights are processed in a single screen-space pass
                 // ... (lighting calculation implementation would go here)
-                // 4. 🟩 LINK THE PROCEDURAL FULL-SCREEN COMPOSITION PASS SHADER HERE
+                // LINK THE PROCEDURAL FULL-SCREEN COMPOSITION PASS SHADER HERE
 
-                 // 🟩 VUID FIX: Apply dynamic state properties explicitly for full-screen quad processing!
+                 // Apply dynamic state properties explicitly for full-screen quad processing!
                 float fWidth = static_cast<float>(width);
                 float fHeight = static_cast<float>(height);
                 cmd.setViewport(0, { vk::Viewport(0.0f, 0.0f, fWidth, fHeight, 0.0f, 1.0f) });
@@ -1458,21 +2496,18 @@ namespace Proto
                 auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
                 cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pbrRenderer.GetDeferredPipeline());
 
-                // Pass global engine uniform descriptor tracks 
-                //auto& lowLevelRenderer = VulkanRenderer::Get();
-                //uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
-                //cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pbrRenderer.GetDeferredPipelineLayout(), 0,
-                //    { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame] }, {});
-
                 auto* posRes = graph.GetResource("GBuffer_Position");
                 auto* normalRes = graph.GetResource("GBuffer_Normal");
                 auto* albedoRes = graph.GetResource("GBuffer_Albedo");
+                auto* emissiveRes = graph.GetResource("GBuffer_Emissive");
+                auto* surfaceRes = graph.GetResource("GBuffer_SurfaceExt");
+                auto* shadowRes = graph.GetResource("ShadowMap");
 
                 auto& lowLevelRenderer = VulkanRenderer::Get();
                 auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
                 uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
 
-                // 🟩 Allocate and write ONLY ONCE so the handle stays alive while the GPU executes!
+                // Allocate and write ONLY ONCE so the handle stays alive while the GPU executes!
                 if (!*pbrRenderer.m_DeferredGBufferSet) {
                     vk::DescriptorSetLayout deferredLayout = pbrRenderer.GetDeferredSetLayout();
                     vk::DescriptorSetAllocateInfo allocInfo{
@@ -1483,14 +2518,21 @@ namespace Proto
                     pbrRenderer.m_DeferredGBufferSet = std::move(logicalDevice.allocateDescriptorSets(allocInfo).front());
 
                     vk::Sampler sampler = lowLevelRenderer.imGui->GetSampler();
-                    std::array<vk::DescriptorImageInfo, 3> imageInfos = {
-                        vk::DescriptorImageInfo{ sampler, *posRes->view,    vk::ImageLayout::eShaderReadOnlyOptimal },
-                        vk::DescriptorImageInfo{ sampler, *normalRes->view, vk::ImageLayout::eShaderReadOnlyOptimal },
-                        vk::DescriptorImageInfo{ sampler, *albedoRes->view, vk::ImageLayout::eShaderReadOnlyOptimal }
+                    std::array<vk::DescriptorImageInfo, 10> imageInfos = {
+                        vk::DescriptorImageInfo{ sampler, *posRes->view,     vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ sampler, *normalRes->view,  vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ sampler, *albedoRes->view,  vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ sampler, *emissiveRes->view,vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ sampler, *shadowRes->view,  vk::ImageLayout::eDepthStencilReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ sampler, *surfaceRes->view, vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ *pbrRenderer.m_EnvCubemap->GetSampler(), *pbrRenderer.m_EnvCubemap->GetImageView(), vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ *pbrRenderer.m_EnvCubemap->GetSampler(), *pbrRenderer.m_EnvCubemap->GetImageView(), vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ *pbrRenderer.m_BrdfLutTex->GetSampler(), *pbrRenderer.m_BrdfLutTex->GetImageView(), vk::ImageLayout::eShaderReadOnlyOptimal },
+                        vk::DescriptorImageInfo{ sampler, *graph.GetResource("SSAO_Blur")->view, vk::ImageLayout::eShaderReadOnlyOptimal }
                     };
 
-                    std::array<vk::WriteDescriptorSet, 3> writes;
-                    for (uint32_t b = 0; b < 3; ++b) {
+                    std::array<vk::WriteDescriptorSet, 10> writes;
+                    for (uint32_t b = 0; b < 10; ++b) {
                         writes[b] = vk::WriteDescriptorSet{
                             .dstSet = *pbrRenderer.m_DeferredGBufferSet,
                             .dstBinding = b,
@@ -1509,11 +2551,431 @@ namespace Proto
                 };
                 cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pbrRenderer.GetDeferredPipelineLayout(), 0, sets, {});
 
+                bool shadowEnabled = false;
+                glm::mat4 lightSpaceMatrix = pbrRenderer.ComputeLightSpaceMatrix(shadowEnabled);
+                SceneRenderer::DeferredShadowPushConstants shadowPC{
+                    lightSpaceMatrix,
+                    shadowEnabled ? 1 : 0
+                };
+                cmd.pushConstants(
+                    pbrRenderer.GetDeferredPipelineLayout(),
+                    vk::ShaderStageFlagBits::eFragment,
+                    0,
+                    sizeof(SceneRenderer::DeferredShadowPushConstants),
+                    &shadowPC
+                );
+
                 // Process full-screen procedural triangle composition draw(3)
                 cmd.draw(3, 1, 0, 0);
 
                 cmd.endRendering();                                             // Complete lighting calculations
             });
+
+            graph.AddPass("TransparentPass",
+                { "HDRColor" }, // Depends on LightingPass (FinalColor) and GeometryPass (Depth)
+                {},                        // Modifies FinalColor in-place without transitioning it away from eShaderReadOnlyOptimal
+                [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
+                {
+                    auto* finalRes = graph.GetResource("HDRColor");
+                    auto* depthRes = graph.GetResource("Depth");
+                    if (!finalRes || !depthRes) return;
+
+                    // Transition FinalColor back from eShaderReadOnlyOptimal (set by LightingPass) to eColorAttachmentOptimal
+                    vk::ImageMemoryBarrier toColorBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eShaderRead,
+                        .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead,
+                        .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                        .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = *finalRes->image,
+                        .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+                    };
+                    cmd.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eFragmentShader,
+                        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                        {}, {}, {}, { toColorBarrier }
+                    );
+
+                    // Load existing lit scene and depth buffer
+                    vk::RenderingAttachmentInfoKHR colorAttachment;
+                    colorAttachment.setImageView(*finalRes->view)
+                        .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                        .setLoadOp(vk::AttachmentLoadOp::eLoad)
+                        .setStoreOp(vk::AttachmentStoreOp::eStore);
+
+                    vk::RenderingAttachmentInfoKHR depthAttachment;
+                    depthAttachment.setImageView(*depthRes->view)
+                        .setImageLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal)
+                        .setLoadOp(vk::AttachmentLoadOp::eLoad)
+                        .setStoreOp(vk::AttachmentStoreOp::eDontCare);
+
+                    vk::RenderingInfoKHR renderingInfo;
+                    renderingInfo.setRenderArea({ {0, 0}, {width, height} })
+                        .setLayerCount(1)
+                        .setColorAttachmentCount(1)
+                        .setPColorAttachments(&colorAttachment)
+                        .setPDepthAttachment(&depthAttachment);
+
+                    auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                    pbrRenderer.DispatchAndRenderParticles(cmd, ImGui::GetIO().DeltaTime);
+
+                    cmd.beginRendering(renderingInfo);
+
+                    float fWidth = static_cast<float>(width);
+                    float fHeight = static_cast<float>(height);
+                    cmd.setViewport(0, { vk::Viewport(0.0f, 0.0f, fWidth, fHeight, 0.0f, 1.0f) });
+                    cmd.setScissor(0, { vk::Rect2D({0, 0}, {width, height}) });
+
+                    auto& lowLevelRenderer = VulkanRenderer::Get();
+                    auto currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
+
+                    pbrRenderer.RenderTransparentPass(Entity::GetActiveSceneEntities(), cmd);
+                    if (*pbrRenderer.m_ParticleRenderPipeline && *pbrRenderer.m_ParticleSet) {
+                        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_ParticleRenderPipeline);
+                        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                            *pbrRenderer.m_ParticlePipelineLayout, 0,
+                            { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame],
+                            *pbrRenderer.m_ParticleSet }, {});
+
+                        cmd.pushConstants(*pbrRenderer.m_ParticlePipelineLayout,
+                            vk::ShaderStageFlagBits::eCompute | vk::ShaderStageFlagBits::eVertex,
+                            0, sizeof(SceneRenderer::ParticlePushConstants), &pbrRenderer.m_LastParticlePC);
+
+                        if (pbrRenderer.m_HasActiveParticles)
+                        {
+                            cmd.draw(6, SceneRenderer::MAX_PARTICLES, 0, 0);
+                        }
+                    }
+
+                    cmd.endRendering();
+
+                    // Transition FinalColor back to eShaderReadOnlyOptimal so ImGui can sample it in the Viewport window
+                    vk::ImageMemoryBarrier toShaderReadBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                        .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                        .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = *finalRes->image,
+                        .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+                    };
+                    cmd.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                        vk::PipelineStageFlagBits::eFragmentShader,
+                        {}, {}, {}, { toShaderReadBarrier }
+                    );
+                });
+
+            graph.AddPass("FogPass",
+                { "HDRColor" },
+                { "FogColor" },
+                [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
+                {
+                    auto* hdrRes = graph.GetResource("HDRColor");
+                    auto* posRes = graph.GetResource("GBuffer_Position");
+                    auto* shadowRes = graph.GetResource("ShadowMap");
+                    auto* fogRes = graph.GetResource("FogColor");
+                    if (!hdrRes || !posRes || !shadowRes || !fogRes) return;
+
+                    auto& lowLevelRenderer = VulkanRenderer::Get();
+                    auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
+                    auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                    uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
+                    vk::Sampler sampler = lowLevelRenderer.imGui->GetSampler();
+
+                    if (!*pbrRenderer.m_FogSet) {
+                        vk::DescriptorSetLayout layout = *pbrRenderer.m_FogSetLayout;
+                        pbrRenderer.m_FogSet = std::move(logicalDevice.allocateDescriptorSets({
+                            .descriptorPool = *lowLevelRenderer.vulkanCommandBuffer->descriptorPool,
+                            .descriptorSetCount = 1,
+                            .pSetLayouts = &layout
+                            }).front());
+
+                        std::array<vk::DescriptorImageInfo, 3> infos = {
+                            vk::DescriptorImageInfo{ sampler, *hdrRes->view,    vk::ImageLayout::eShaderReadOnlyOptimal },
+                            vk::DescriptorImageInfo{ sampler, *posRes->view,    vk::ImageLayout::eShaderReadOnlyOptimal },
+                            vk::DescriptorImageInfo{ sampler, *shadowRes->view, vk::ImageLayout::eDepthStencilReadOnlyOptimal }
+                        };
+                        std::array<vk::WriteDescriptorSet, 3> writes;
+                        for (uint32_t b = 0; b < 3; ++b) {
+                            writes[b] = vk::WriteDescriptorSet{
+                                .dstSet = *pbrRenderer.m_FogSet,
+                                .dstBinding = b,
+                                .descriptorCount = 1,
+                                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                                .pImageInfo = &infos[b]
+                            };
+                        }
+                        logicalDevice.updateDescriptorSets(writes, {});
+                    }
+
+                    vk::RenderingAttachmentInfoKHR colorAttachment;
+                    colorAttachment.setImageView(*fogRes->view)
+                        .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                        .setLoadOp(vk::AttachmentLoadOp::eDontCare)
+                        .setStoreOp(vk::AttachmentStoreOp::eStore);
+
+                    cmd.beginRendering({
+                        .renderArea = { { 0, 0 },{ width, height } },
+                        .layerCount = 1,
+                        .colorAttachmentCount = 1,
+                        .pColorAttachments = &colorAttachment
+                        });
+                    cmd.setViewport(0, { vk::Viewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f) });
+                    cmd.setScissor(0, { vk::Rect2D({ 0, 0 },{ width, height }) });
+
+                    if (*pbrRenderer.m_FogPipeline) {
+                        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_FogPipeline);
+                        std::array<vk::DescriptorSet, 2> sets = {
+                            *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame],
+                            *pbrRenderer.m_FogSet
+                        };
+                        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_FogPipelineLayout, 0, sets, {});
+
+                        glm::mat4 invVP(1.0f);
+                        for (Entity* ent : Entity::GetActiveSceneEntities()) {
+                            if (ent && ent->IsActive()) {
+                                if (auto* cam = ent->GetComponent<CameraComponent>()) {
+                                    invVP = glm::inverse(cam->GetProjectionMatrix() * cam->GetViewMatrix());
+                                    break;
+                                }
+                            }
+                        }
+
+                        SceneRenderer::FogPushConstants pc{
+                            invVP,
+                            glm::vec4(pbrRenderer.m_FogColor, pbrRenderer.m_FogDensity),
+                            glm::vec4(pbrRenderer.m_FogSunScatter, pbrRenderer.m_FogHeightFalloff, pbrRenderer.m_FogBaseHeight, pbrRenderer.m_FogMaxDistance)
+                        };
+
+                        cmd.pushConstants(*pbrRenderer.m_FogPipelineLayout,
+                            vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+                        cmd.draw(3, 1, 0, 0);
+                    }
+                    cmd.endRendering();
+                });
+
+            graph.AddPass("SSRPass",
+                { "FogColor" },
+                { "SSRColor" },
+                [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
+                {
+                    auto* fogRes = graph.GetResource("FogColor");
+                    auto* posRes = graph.GetResource("GBuffer_Position");
+                    auto* normRes = graph.GetResource("GBuffer_Normal");
+                    auto* albRes = graph.GetResource("GBuffer_Albedo");
+                    auto* ssrRes = graph.GetResource("SSRColor");
+                    if (!fogRes || !posRes || !normRes || !albRes || !ssrRes) return;
+
+                    auto& lowLevelRenderer = VulkanRenderer::Get();
+                    auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
+                    auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                    uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
+                    vk::Sampler sampler = lowLevelRenderer.imGui->GetSampler();
+
+                    if (!*pbrRenderer.m_SSRSet) {
+                        vk::DescriptorSetLayout layout = *pbrRenderer.m_SSRSetLayout;
+                        pbrRenderer.m_SSRSet = std::move(logicalDevice.allocateDescriptorSets({
+                            .descriptorPool = *lowLevelRenderer.vulkanCommandBuffer->descriptorPool,
+                            .descriptorSetCount = 1,
+                            .pSetLayouts = &layout
+                            }).front());
+
+                        std::array<vk::DescriptorImageInfo, 4> infos = {
+                            vk::DescriptorImageInfo{ sampler, *fogRes->view,  vk::ImageLayout::eShaderReadOnlyOptimal },
+                            vk::DescriptorImageInfo{ sampler, *posRes->view,  vk::ImageLayout::eShaderReadOnlyOptimal },
+                            vk::DescriptorImageInfo{ sampler, *normRes->view, vk::ImageLayout::eShaderReadOnlyOptimal },
+                            vk::DescriptorImageInfo{ sampler, *albRes->view,  vk::ImageLayout::eShaderReadOnlyOptimal }
+                        };
+                        std::array<vk::WriteDescriptorSet, 4> writes;
+                        for (uint32_t b = 0; b < 4; ++b) {
+                            writes[b] = vk::WriteDescriptorSet{
+                                .dstSet = *pbrRenderer.m_SSRSet,
+                                .dstBinding = b,
+                                .descriptorCount = 1,
+                                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                                .pImageInfo = &infos[b]
+                            };
+                        }
+                        logicalDevice.updateDescriptorSets(writes, {});
+                    }
+
+                    vk::RenderingAttachmentInfoKHR colorAttachment;
+                    colorAttachment.setImageView(*ssrRes->view)
+                        .setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                        .setLoadOp(vk::AttachmentLoadOp::eDontCare)
+                        .setStoreOp(vk::AttachmentStoreOp::eStore);
+
+                    cmd.beginRendering({
+                        .renderArea = { { 0, 0 },{ width, height } },
+                        .layerCount = 1,
+                        .colorAttachmentCount = 1,
+                        .pColorAttachments = &colorAttachment
+                        });
+
+                    cmd.setViewport(0, { vk::Viewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f) });
+                    cmd.setScissor(0, { vk::Rect2D({ 0, 0 },{ width, height }) });
+
+                    if (*pbrRenderer.m_SSRPipeline) {
+                        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_SSRPipeline);
+                        std::array<vk::DescriptorSet, 2> sets = {
+                            *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame],
+                            *pbrRenderer.m_SSRSet
+                        };
+                        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_SSRPipelineLayout, 0, sets, {});
+
+                        SceneRenderer::SSRPushConstants pc{
+                            pbrRenderer.m_SSRMaxDistance,
+                            0.35f,
+                            pbrRenderer.m_SSRThickness,
+                            pbrRenderer.m_SSRIntensity
+                        };
+                        cmd.pushConstants(*pbrRenderer.m_SSRPipelineLayout,
+                            vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+
+                        cmd.draw(3, 1, 0, 0);
+                    }
+
+                    cmd.endRendering();
+                });
+
+            graph.AddPass("BloomPass",
+                { "SSRColor" },
+                {}, // Manage BloomPing/Pong transitions explicitly inside the pass (avoids double-transition VUID-01197)
+                [&graph, halfW, halfH](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
+                {
+                    auto* ssrRes = graph.GetResource("SSRColor");
+                    auto* pingRes = graph.GetResource("BloomPing");
+                    auto* pongRes = graph.GetResource("BloomPong");
+                    if (!ssrRes || !pingRes || !pongRes) return;
+
+                    auto& lowLevelRenderer = VulkanRenderer::Get();
+                    auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
+                    auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                    vk::Sampler sampler = lowLevelRenderer.imGui->GetSampler();
+
+                    auto allocateSingleSet = [&](vk::raii::DescriptorSet& set, vk::ImageView view) {
+                        if (*set) return;
+                        vk::DescriptorSetLayout layout = *pbrRenderer.m_BloomSetLayout;
+                        set = std::move(logicalDevice.allocateDescriptorSets({
+                            .descriptorPool = *lowLevelRenderer.vulkanCommandBuffer->descriptorPool,
+                            .descriptorSetCount = 1,
+                            .pSetLayouts = &layout
+                            }).front());
+
+                        vk::DescriptorImageInfo info{ sampler, view, vk::ImageLayout::eShaderReadOnlyOptimal };
+                        std::array<vk::WriteDescriptorSet, 2> writes = {
+                            vk::WriteDescriptorSet{.dstSet = *set, .dstBinding = 0, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &info },
+                            vk::WriteDescriptorSet{.dstSet = *set, .dstBinding = 1, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &info }
+                        };
+                        logicalDevice.updateDescriptorSets(writes, {});
+                        };
+
+                    allocateSingleSet(pbrRenderer.m_BloomExtractSet, *ssrRes->view);
+                    allocateSingleSet(pbrRenderer.m_BloomBlurHorizSet, *pingRes->view);
+                    allocateSingleSet(pbrRenderer.m_BloomBlurVertSet, *pongRes->view);
+
+                    float fW = static_cast<float>(halfW);
+                    float fH = static_cast<float>(halfH);
+                    vk::Viewport vp(0.0f, 0.0f, fW, fH, 0.0f, 1.0f);
+                    vk::Rect2D scissor({ 0, 0 }, { halfW, halfH });
+
+                    auto runPass = [&](vk::Image targetImg, vk::ImageView targetView,
+                        vk::Pipeline pipeline, vk::DescriptorSet set, glm::vec2 dir) {
+                            // Transition from eUndefined (valid from any prior layout when loadOp = eDontCare!)
+                            vk::ImageMemoryBarrier toColor{
+                                .srcAccessMask = vk::AccessFlagBits::eShaderRead,
+                                .dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                                .oldLayout = vk::ImageLayout::eUndefined,
+                                .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                                .image = targetImg,
+                                .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+                            };
+                            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, { toColor });
+
+                            vk::RenderingAttachmentInfoKHR attach;
+                            attach.setImageView(targetView).setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                                .setLoadOp(vk::AttachmentLoadOp::eDontCare).setStoreOp(vk::AttachmentStoreOp::eStore);
+
+                            cmd.beginRendering({ .renderArea = scissor, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &attach });
+                            cmd.setViewport(0, { vp });
+                            cmd.setScissor(0, { scissor });
+                            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+                            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_BloomPipelineLayout, 0, { set }, {});
+
+                            SceneRenderer::BloomPushConstants pc{ dir, 2.5f, pbrRenderer.m_BloomIntensity };
+                            cmd.pushConstants(*pbrRenderer.m_BloomPipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+                            cmd.draw(3, 1, 0, 0);
+                            cmd.endRendering();
+
+                            vk::ImageMemoryBarrier toRead{
+                                .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
+                                .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                                .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                                .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                                .image = targetImg,
+                                .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+                            };
+                            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, { toRead });
+                        };
+
+                    // 1. Bright extract HDRColor -> BloomPing (ends in eShaderReadOnlyOptimal)
+                    runPass(*pingRes->image, *pingRes->view, *pbrRenderer.m_BloomExtractPipeline, *pbrRenderer.m_BloomExtractSet, { 0.0f, 0.0f });
+                    // 2. Horizontal blur BloomPing -> BloomPong (ends in eShaderReadOnlyOptimal)
+                    runPass(*pongRes->image, *pongRes->view, *pbrRenderer.m_BloomBlurPipeline, *pbrRenderer.m_BloomBlurHorizSet, { 1.0f, 0.0f });
+                    // 3. Vertical blur BloomPong -> BloomPing (ends in eShaderReadOnlyOptimal)
+                    runPass(*pingRes->image, *pingRes->view, *pbrRenderer.m_BloomBlurPipeline, *pbrRenderer.m_BloomBlurVertSet, { 0.0f, 1.0f });
+                });
+
+            graph.AddPass("CompositePass",
+                { "SSRColor" }, // BloomPing is already in eShaderReadOnlyOptimal from BloomPass!
+                { "FinalColor" },
+                [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
+                {
+                    auto* ssrRes = graph.GetResource("SSRColor");
+                    auto* pingRes = graph.GetResource("BloomPing");
+                    auto* finalRes = graph.GetResource("FinalColor");
+                    if (!ssrRes || !pingRes || !finalRes) return;
+
+                    auto& lowLevelRenderer = VulkanRenderer::Get();
+                    auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
+                    auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                    vk::Sampler sampler = lowLevelRenderer.imGui->GetSampler();
+
+                    if (!*pbrRenderer.m_BloomCompositeSet) {
+                        vk::DescriptorSetLayout layout = *pbrRenderer.m_BloomSetLayout;
+                        pbrRenderer.m_BloomCompositeSet = std::move(logicalDevice.allocateDescriptorSets({
+                            .descriptorPool = *lowLevelRenderer.vulkanCommandBuffer->descriptorPool,
+                            .descriptorSetCount = 1,
+                            .pSetLayouts = &layout
+                            }).front());
+
+                        vk::DescriptorImageInfo hdrInfo{ sampler, *ssrRes->view, vk::ImageLayout::eShaderReadOnlyOptimal };
+                        vk::DescriptorImageInfo bloomInfo{ sampler, *pingRes->view, vk::ImageLayout::eShaderReadOnlyOptimal };
+                        std::array<vk::WriteDescriptorSet, 2> writes = {
+                            vk::WriteDescriptorSet{.dstSet = *pbrRenderer.m_BloomCompositeSet, .dstBinding = 0, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &hdrInfo },
+                            vk::WriteDescriptorSet{.dstSet = *pbrRenderer.m_BloomCompositeSet, .dstBinding = 1, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eCombinedImageSampler, .pImageInfo = &bloomInfo }
+                        };
+                        logicalDevice.updateDescriptorSets(writes, {});
+                    }
+
+                    vk::RenderingAttachmentInfoKHR attach;
+                    attach.setImageView(*finalRes->view).setImageLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                        .setLoadOp(vk::AttachmentLoadOp::eDontCare).setStoreOp(vk::AttachmentStoreOp::eStore);
+
+                    cmd.beginRendering({ .renderArea = { {0, 0}, {width, height} }, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &attach });
+                    cmd.setViewport(0, { vk::Viewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f) });
+                    cmd.setScissor(0, { vk::Rect2D({0, 0}, {width, height}) });
+                    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_BloomCompositePipeline);
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrRenderer.m_BloomPipelineLayout, 0, { *pbrRenderer.m_BloomCompositeSet }, {});
+
+                    SceneRenderer::BloomPushConstants pc{ { 0.0f, 0.0f }, 2.5f, pbrRenderer.m_BloomIntensity };
+                    cmd.pushConstants(*pbrRenderer.m_BloomPipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+                    cmd.draw(3, 1, 0, 0);
+                    cmd.endRendering();
+                });
 
         // Compile the complete rendergraph for execution
         // This analyzes dependencies and generates optimal execution plan
@@ -1534,7 +2996,7 @@ namespace Proto
             // 2. Check if the memory types flags match our requested hardware requirements (e.g. DeviceLocal)
             if ((typeFilter & (1 << i)) &&
                 (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-                return i; // 🟩 Return the exact matching type index found!
+                return i; // Return the exact matching type index found!
             }
         }
 

@@ -2,15 +2,12 @@
 
 #include "ResourceManager.hpp"
 #include "Platform/Vulkan/VK_Buffer.hpp"
-#include "Platform/Vulkan/VK_ImageView.hpp"
-
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_raii.hpp>
 
 #include <format> // Required for std::format
 #include <filesystem>
 #include <iostream>
-
 #include <ktx.h>
 #include <tiny_gltf.h>
 
@@ -38,6 +35,15 @@ namespace Proto
         const vk::raii::ImageView& GetImageView() const { return vkData.imageView; }
         const vk::raii::Sampler& GetSampler() const { return vkData.sampler; }
 
+        bool LoadFromMemory(const unsigned char* pixelData, int texWidth, int texHeight, bool srgb = true);
+        void SetSRGB(bool srgb) { m_IsSRGB = srgb; }
+        bool LoadCubemap(const std::string& filePath);
+
+        bool CreateProceduralStudioCubemap(uint32_t size = 64);
+        bool CreateProceduralBRDFLUT(uint32_t size = 128);
+        uint32_t mipLevels = 1;
+
+        bool LoadHDRI(const std::string& filepath, uint32_t faceSize = 512);
     private:
         struct VulkanGpuData {
             vk::raii::Image image{ nullptr };
@@ -47,6 +53,9 @@ namespace Proto
         } vkData;
 
         ktxTexture* LoadImageData(const std::string& filePath, int* w, int* h, int* ch);
+
+        bool UploadToGpu(const void* data, vk::DeviceSize imageSize, int texWidth, int texHeight, bool srgb);
+        bool m_IsSRGB = true;
     };
 
     // Mesh resource
@@ -103,9 +112,16 @@ namespace Proto
 
         AlphaMode alphaMode = AlphaMode::OPAQUE_MODE;
         float alphaCutoff = 0.5f;
+        bool doubleSided = false;
 
-        // FIXED: Use the move-only RAII wrapper to prevent automatic destruction!
+        // Use the move-only RAII wrapper to prevent automatic destruction!
         vk::raii::DescriptorSet descriptorSet{ nullptr };
+
+        float clearcoatFactor = 0.0f;
+        float clearcoatRoughness = 0.0f;
+        float iridescenceFactor = 0.0f;
+        float iridescenceIor = 1.3f;
+        float iridescenceThicknessMax = 400.0f;
     };
 
     // Structure for animation keyframes
@@ -174,7 +190,9 @@ namespace Proto
         virtual void doUnload() override;
 
         Node* findNode(const std::string& name);
-        void updateAnimation(uint32_t index, float deltaTime);
+        void updateAnimation(uint32_t index, float deltaTime, bool loop = true);
+
+        static std::shared_ptr<Model> CreateGroundPlane(const std::string& id = "procedural_ground_plane", float halfExtent = 25.0f, float uvTiling = 10.0f);
     };
 
     // Shader resource

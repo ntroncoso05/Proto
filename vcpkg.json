@@ -9,6 +9,9 @@
     "tinygltf",
     "ktx",
     "spdlog",
+    "imguizmo",
+    "joltphysics",
+    "nlohmann-json",
     {
       "name": "imgui",
       "features": [

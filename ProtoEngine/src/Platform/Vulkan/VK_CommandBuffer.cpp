@@ -181,13 +181,13 @@ namespace Proto
 
         // 2. FIX: ALLOCATE THE MASTER DESCRIPTOR POOL HERE Configure sizes for both your global dynamic uniform buffers and texture samplers
         std::array<vk::DescriptorPoolSize, 2> poolSizes = {
-            vk::DescriptorPoolSize{ vk::DescriptorType::eUniformBuffer, 10 },
-            vk::DescriptorPoolSize{ vk::DescriptorType::eCombinedImageSampler, 100 }
+            vk::DescriptorPoolSize{ vk::DescriptorType::eUniformBuffer, 64 },//10
+            vk::DescriptorPoolSize{ vk::DescriptorType::eCombinedImageSampler, 1000 }//100
         };
 
         vk::DescriptorPoolCreateInfo descPoolInfo{
             .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, // Crucial for asset reloads
-            .maxSets = 50, // Total maximum allocated set count
+            .maxSets = 256, //50, // Total maximum allocated set count
             .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
             .pPoolSizes = poolSizes.data()
         };

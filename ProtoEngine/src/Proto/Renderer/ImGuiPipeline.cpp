@@ -20,12 +20,13 @@ namespace Proto {
         auto* swapchainSubsystem = renderer.vulkanSwapChain;
         vk::Image activeSwapchainImage = swapchainSubsystem->swapChainImages[imageIndex];
 
-        // 🟩 STEP 2: RUN THE ATTACHMENT PASS DRAW LOOPS
+        // RUN THE ATTACHMENT PASS DRAW LOOPS
         vk::RenderingAttachmentInfo uiColorAttachment = {
             .imageView = swapchainSubsystem->swapChainImageViews[imageIndex],
             .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .loadOp = vk::AttachmentLoadOp::eLoad,  // Properly preserves the 3D scene geometry rendered behind this pass!, Change to eClear to clear layout traces cleanly
+            .loadOp = vk::AttachmentLoadOp::eClear,  // Properly preserves the 3D scene geometry rendered behind this pass!, Change to eClear to clear layout traces cleanly
             .storeOp = vk::AttachmentStoreOp::eStore,
+            .clearValue = vk::ClearColorValue(std::array<float, 4>{0.9f, 0.1f, 0.15f, 1.0f})
         };
 
         vk::RenderingInfo uiRenderingInfo = {
@@ -38,12 +39,13 @@ namespace Proto {
 
         cmd.beginRendering(uiRenderingInfo);
 
+        uint32_t frameIdx = swapchainSubsystem->GetFrameIndex();
         // Execute ImGui render instructions completely
-        imGui->drawFrame(cmd, imageIndex, swapchainSubsystem->swapChainExtent);
+        imGui->drawFrame(cmd, frameIdx, swapchainSubsystem->swapChainExtent);
 
         cmd.endRendering();
 
-        // STEP 3: TRANSITION BACKBUFFER TO PRESENT LAYOUT This flips the image target so your window platform interface context can display it on screen!
+        // TRANSITION BACKBUFFER TO PRESENT LAYOUT This flips the image target so your window platform interface context can display it on screen!
         vk::ImageMemoryBarrier barrierToPresent{
             .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
             .dstAccessMask = vk::AccessFlagBits::eNone,

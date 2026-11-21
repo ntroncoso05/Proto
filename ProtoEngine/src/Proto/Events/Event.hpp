@@ -1,10 +1,8 @@
 #pragma once
-//#include <functional>
 
 #include "Core/Core.hpp"
 #include <string>
 #include <sstream>
-
 #include <queue>
 
 namespace Proto {
@@ -66,10 +64,14 @@ namespace Proto {
 
             if (m_Event.GetType() == T::GetStaticType()) {
                 // Execute handler and pass back its boolean result or set Handled inside
-                handler(static_cast<const T&>(m_Event));
-
-                // Once dispatched to a matching type, mark it handled to consume it
-                m_Event.Handled = true;
+                using ReturnType = std::invoke_result_t<F, const T&>;
+                if constexpr (std::is_void_v<ReturnType>) {
+                    handler(static_cast<const T&>(m_Event));
+                    m_Event.Handled = true;
+                }
+                else {
+                    m_Event.Handled |= handler(static_cast<const T&>(m_Event));
+                }
                 return true;
             }
             return false;

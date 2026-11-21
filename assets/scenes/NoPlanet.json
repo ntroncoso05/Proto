@@ -1,0 +1,325 @@
+{
+    "Entities": [
+        {
+            "BoxColliderComponent": {
+                "HalfExtents": [
+                    25.0,
+                    0.10000000149011612,
+                    25.0
+                ],
+                "IsTrigger": false,
+                "Offset": [
+                    0.0,
+                    -0.10000000149011612,
+                    0.0
+                ]
+            },
+            "ModelComponent": {
+                "AssetId": "procedural_ground_plane"
+            },
+            "Name": "GroundPlane",
+            "Parent": "",
+            "RigidBodyComponent": {
+                "AngularDamping": 0.05000000074505806,
+                "Friction": 0.699999988079071,
+                "LinearDamping": 0.05000000074505806,
+                "Mass": 1.0,
+                "MotionType": 0,
+                "Restitution": 0.25,
+                "UseGravity": true
+            },
+            "TransformComponent": {
+                "Position": [
+                    0.0,
+                    -1.0,
+                    -2.0
+                ],
+                "Rotation": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                ]
+            }
+        },
+        {
+            "CameraComponent": {
+                "FOV": 45.0,
+                "MouseSensitivity": 0.10000000149011612,
+                "MovementSpeed": 5.0
+            },
+            "Name": "MainCamera",
+            "Parent": "",
+            "TransformComponent": {
+                "Position": [
+                    0.0,
+                    3.0,
+                    10.0
+                ],
+                "Rotation": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                ]
+            }
+        },
+        {
+            "ModelComponent": {
+                "AssetId": "viking_room"
+            },
+            "Name": "VikingRoom",
+            "Parent": "",
+            "TransformComponent": {
+                "Position": [
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Rotation": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                ]
+            }
+        },
+        {
+            "LightComponent": {
+                "CastShadows": true,
+                "Color": [
+                    1.0,
+                    0.949999988079071,
+                    0.8500000238418579
+                ],
+                "InnerConeAngle": 15.0,
+                "Intensity": 3.0,
+                "OuterConeAngle": 30.0,
+                "Radius": 5.5,
+                "Type": 0
+            },
+            "Name": "MainLight",
+            "Parent": "",
+            "TransformComponent": {
+                "Position": [
+                    3.0,
+                    5.0,
+                    4.0
+                ],
+                "Rotation": [
+                    0.8923990726470947,
+                    -0.36964383721351624,
+                    0.2391176074743271,
+                    0.0990457683801651
+                ],
+                "Scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                ]
+            }
+        },
+        {
+            "BoxColliderComponent": {
+                "HalfExtents": [
+                    1.100000023841858,
+                    0.699999988079071,
+                    2.200000047683716
+                ],
+                "IsTrigger": false,
+                "Offset": [
+                    0.0,
+                    0.699999988079071,
+                    0.0
+                ]
+            },
+            "ModelComponent": {
+                "AssetId": "CarConcept"
+            },
+            "Name": "Car",
+            "Parent": "",
+            "ParticleEmitterComponent": {
+                "ActiveParticles": 2048,
+                "Color": [
+                    1.0,
+                    0.44999998807907104,
+                    0.10000000149011612
+                ],
+                "Direction": [
+                    0.0,
+                    0.3499999940395355,
+                    1.0
+                ],
+                "Enabled": true,
+                "Gravity": -6.5,
+                "HDRIntensity": 4.0,
+                "InitialSpeed": 3.5,
+                "MaxLife": 1.7999999523162842,
+                "MinLife": 0.800000011920929,
+                "ParticleSize": 0.1599999964237213,
+                "PeOffset": [
+                    0.0,
+                    0.3499999940395355,
+                    2.1500000953674316
+                ],
+                "Spread": 0.44999998807907104
+            },
+            "RigidBodyComponent": {
+                "AngularDamping": 0.05000000074505806,
+                "Friction": 0.5,
+                "LinearDamping": 0.05000000074505806,
+                "Mass": 1.0,
+                "MotionType": 2,
+                "Restitution": 0.30000001192092896,
+                "UseGravity": true
+            },
+            "TransformComponent": {
+                "Position": [
+                    -3.0,
+                    4.0,
+                    -2.0
+                ],
+                "Rotation": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Scale": [
+                    1.0,
+                    1.0,
+                    1.0
+                ]
+            }
+        },
+        {
+            "AnimationComponent": {
+                "ActiveClipIndex": 0,
+                "CurrentTime": 35.53231430053711,
+                "IsPlaying": true,
+                "Loop": true,
+                "PlaybackSpeed": 1.0
+            },
+            "BoxColliderComponent": {
+                "HalfExtents": [
+                    1.100000023841858,
+                    0.699999988079071,
+                    2.200000047683716
+                ],
+                "IsTrigger": false,
+                "Offset": [
+                    0.0,
+                    0.699999988079071,
+                    0.0
+                ]
+            },
+            "ModelComponent": {
+                "AssetId": "ChronographWatch"
+            },
+            "Name": "Watch",
+            "Parent": "",
+            "RigidBodyComponent": {
+                "AngularDamping": 0.05000000074505806,
+                "Friction": 0.5,
+                "LinearDamping": 0.05000000074505806,
+                "Mass": 1.0,
+                "MotionType": 2,
+                "Restitution": 0.30000001192092896,
+                "UseGravity": true
+            },
+            "TransformComponent": {
+                "Position": [
+                    3.0,
+                    5.0,
+                    -2.0
+                ],
+                "Rotation": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Scale": [
+                    0.5,
+                    0.5,
+                    0.5
+                ]
+            }
+        },
+        {
+            "ModelComponent": {
+                "AssetId": "sheriff-office"
+            },
+            "Name": "sheriff",
+            "Parent": "",
+            "TransformComponent": {
+                "Position": [
+                    -3.0,
+                    7.0,
+                    -2.0
+                ],
+                "Rotation": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Scale": [
+                    0.5,
+                    0.5,
+                    0.5
+                ]
+            }
+        },
+        {
+            "ModelComponent": {
+                "AssetId": "mushroom-house"
+            },
+            "Name": "MushroomHouse",
+            "Parent": "",
+            "TransformComponent": {
+                "Position": [
+                    0.0,
+                    7.0,
+                    -2.0
+                ],
+                "Rotation": [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                "Scale": [
+                    0.5,
+                    0.5,
+                    0.5
+                ]
+            }
+        }
+    ],
+    "Environment": {
+        "BloomIntensity": 0.15000000596046448,
+        "EmissiveStrength": 1.0,
+        "HDRIPath": "",
+        "IBLIntensity": 0.25,
+        "SSRIntensity": 0.8500000238418579,
+        "SSRMaxDistance": 25.0,
+        "SSRThickness": 0.2199999988079071
+    },
+    "Scene": "ProtoScene"
+}

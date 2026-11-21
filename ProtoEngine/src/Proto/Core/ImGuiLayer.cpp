@@ -6,6 +6,7 @@
 #include <imgui.h>
 #include <GLFW/glfw3.h>
 #include "Platform/Windows/WindowsPlatform.hpp"
+#include "Platform/Vulkan/VK_Renderer.hpp"
 
 // Internal enum bridge definition to fulfill input source requirements
 #ifndef ImGuiInputSource_Mouse
@@ -132,103 +133,62 @@ namespace Proto {
 
     void ImGuiLayer::OnEvent(Event& event)
     {
-        // 1. Defensively verify that a valid ImGui Context is active before processing events
         if (ImGui::GetCurrentContext() == nullptr)
             return;
 
-        ImGuiIO& io = ImGui::GetIO();
         EventDispatcher dispatcher(event);
-        
-        auto& app = Application::Get();
-        auto* window = static_cast<WindowsWindow*>(&app.GetWindow());
+        ImGuiIO& io = ImGui::GetIO();
 
-        // 1. Safe Event Key Press Mapping (with valid translation lookup)
-        dispatcher.Dispatch<KeyPressEvent>([&io, window, this, &event](const KeyPressEvent& e) {
-                if (e.GetKeyCode() == GLFW_KEY_ESCAPE)
-                {
-                    m_CursorLocked = false;
-                    window->SetCursorMode(false);
+        auto* imGuiUtil = VulkanRenderer::Get().imGui;
+        bool overSceneViewport = imGuiUtil && imGuiUtil->IsViewportHovered();
 
-                    // Clear mouse position records to prevent camera snaps when refocused
-                    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+        // 1. Key Press: feed ImGui, only consume if typing in a text field
+        dispatcher.Dispatch<KeyPressEvent>([&io](const KeyPressEvent& e) {
+            ImGuiKey imguiKey = GLFWKeyToImGuiKey(e.GetKeyCode());
+            if (imguiKey != ImGuiKey_None) {
+                io.AddKeyEvent(imguiKey, true);
+            }
+            return io.WantTextInput;
+            });
 
-                    event.Handled = true;
-                    return true;
-                }
-                return io.WantCaptureKeyboard;
-        });
-
-        // 2. Safe Event Key Release Mapping
+        // 2. Key Release: feed ImGui, never block downstream release tracking
         dispatcher.Dispatch<KeyReleasedEvent>([&io](const KeyReleasedEvent& e) {
             ImGuiKey imguiKey = GLFWKeyToImGuiKey(e.GetKeyCode());
             if (imguiKey != ImGuiKey_None) {
                 io.AddKeyEvent(imguiKey, false);
             }
-            return io.WantCaptureKeyboard;
-        });
+            return false;
+            });
 
-        // 3. Mouse Press Handling
-        dispatcher.Dispatch<MouseButtonPressedEvent>([&io, window, this, &event](const MouseButtonPressedEvent& e) {
-            int button = static_cast<int>(e.GetMouseButton());
-            if (button >= 0 && button < ImGuiMouseButton_COUNT) {
-                //io.MouseDown[button] = true;
-                io.AddMouseButtonEvent(button, true);
-            }
+        // 3. Mouse Press: feed ImGui, only consume clicks outside the 3D Viewport
+        dispatcher.Dispatch<MouseButtonPressedEvent>([&io, overSceneViewport](const MouseButtonPressedEvent& e) {
+            io.AddMouseButtonEvent(e.GetMouseButton(), true);
+            return !overSceneViewport && io.WantCaptureMouse;
+            });
 
-            // Left click outside UI locks the cursor for scene exploration
-            if (!io.WantCaptureMouse && e.GetMouseButton() == 0) // 0 == Left Click
-            {
-                m_CursorLocked = true;
-                window->SetCursorMode(true);
-
-                // Clear active ImGui tracking values to prevent sticky-button traps
-                //io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
-
-                event.Handled = true;
-                return true;
-            }
-            return io.WantCaptureMouse;
-        });
-
+        // 4. Mouse Release: always pass through so drag states cleanly end anywhere
         dispatcher.Dispatch<MouseButtonReleasedEvent>([&io](const MouseButtonReleasedEvent& e) {
-            int button = static_cast<int>(e.GetMouseButton());
-            if (button >= 0 && button < ImGuiMouseButton_COUNT) {
-                //io.MouseDown[button] = false;
-                io.AddMouseButtonEvent(button, false);
-            }
-            return io.WantCaptureMouse;
-        });
+            io.AddMouseButtonEvent(e.GetMouseButton(), false);
+            return false;
+            });
 
-        // 4. Mouse Movement Event Mapping
-        dispatcher.Dispatch<MouseMovedEvent>([&io, &event, this](const MouseMovedEvent& e) {
-            // If the window currently has the cursor locked into 3D navigation mode, let the event pass through to the camera layer by returning false.
-            if (m_CursorLocked) {
-                return false; // Route directly into the 3D Scene Camera
-            }
-
-            // ALWAYS feed coordinate variations into ImGui so menus trace hovering states smoothly Fix: Force ImGui to update its tracking state directly
+        // 5. Mouse Move: always update ImGui hover, only block if hovering non-viewport UI
+        dispatcher.Dispatch<MouseMovedEvent>([&io, overSceneViewport](const MouseMovedEvent& e) {
             io.AddMousePosEvent(e.GetX(), e.GetY());
+            return !overSceneViewport && io.WantCaptureMouse;
+            });
 
-            // If the cursor is unlocked (UI Mode), ImGui completely consumes the event to prevent the 3D scene camera behind the menus from drifting.
-            event.Handled = true;
-            return true;
-        });
-
-        // 5. Mouse Scroll Wheel Event Mapping
-        dispatcher.Dispatch<MouseScrolledEvent>([&io, &event, this](const MouseScrolledEvent& e) {
-            if (m_CursorLocked) {
-                return false;
-            }
+        // 6. Mouse Scroll: zoom 3D scene when hovering Viewport, scroll UI panels otherwise
+        dispatcher.Dispatch<MouseScrolledEvent>([&io, overSceneViewport](const MouseScrolledEvent& e) {
             io.AddMouseWheelEvent(e.GetXOffset(), e.GetYOffset());
+            return !overSceneViewport && io.WantCaptureMouse;
+            });
 
-            event.Handled = true;
-            return true;
-        });
-
+        // 7. Character typing for ImGui text boxes
         dispatcher.Dispatch<KeyTypedEvent>([&io](const KeyTypedEvent& e) {
             io.AddInputCharacter(e.GetKeyCode());
-            return io.WantCaptureKeyboard;
-        });
+            return io.WantTextInput;
+            });
     }
 
 }

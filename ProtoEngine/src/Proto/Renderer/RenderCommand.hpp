@@ -1,7 +1,7 @@
 #pragma once
 
 #include "RendererAPI.hpp"
-#include "Camera.hpp"
+
 namespace Proto {
 
 	class RenderCommand
@@ -28,9 +28,9 @@ namespace Proto {
 			RendererAPI::GetInstance()->Clear();
 		}
 
-		inline static void DrawIndexed(Camera& camera, float timestep)
+		inline static void DrawIndexed(float timestep)
 		{
-			RendererAPI::GetInstance()->DrawIndexed(camera, timestep);
+			RendererAPI::GetInstance()->DrawIndexed(timestep);
 		}
 	private:
 		static RendererAPI* s_RendererAPI;

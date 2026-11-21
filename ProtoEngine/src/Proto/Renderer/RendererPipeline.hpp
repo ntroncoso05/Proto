@@ -1,17 +1,18 @@
 #pragma once
 #include "Core/Entity.hpp"
 #include "Core/ComponentTypes.hpp"
-#include "Renderer/Camera.hpp"
-#include "Platform/Vulkan/VK_Renderer.hpp"
 #include "Core/ResourceTypes.hpp"
 #include "Core/ServiceLocator.hpp"
+#include "Platform/Vulkan/VK_Renderer.hpp"
 
 namespace Proto
 {
     // Explicit 64-byte aligned structure layout matching your Slang PBR shader exactly
     struct PushConstantBlock {
-        glm::mat4 modelMatrix = glm::mat4(1.0f);     // 🟩 Crucial: Pass unique transforms directly to the hardware!
+        glm::mat4 modelMatrix = glm::mat4(1.0f);     // Pass unique transforms directly to the hardware!
         glm::vec4 baseColorFactor = glm::vec4(1.0f); // float4 baseColorFactor
+        glm::vec4 emissiveFactor = glm::vec4(1.0f);  // xyz = emissiveFactor, w = emissiveStrength
+        glm::vec4 coatAndIridescence = glm::vec4(1.0f); // x = clearcoat, y = clearcoatRoughness, z = iridescence, w = iridescenceIor
         glm::vec4 metallicRoughnessFactors = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f); // X = metallic, Y = roughness
 
         int baseColorTextureSet = -1; // Texture binding index for base color
@@ -22,23 +23,23 @@ namespace Proto
 
         float alphaMask = 0.0f; // Alpha masking enable flag
         float alphaMaskCutoff = 0.5f; // Alpha cutoff threshold
-        float padding = 0.0f; // Explicit padding to keep 4-byte struct alignment clean
+        //float padding = 0.0f; // Explicit padding to keep 4-byte struct alignment clean
     };
 
     class CullingSystem {
     private:
-        Camera* camera;
+        CameraComponent* camera = nullptr;
         std::vector<Entity*> visibleEntities;
 
     public:
         CullingSystem() : camera(nullptr) {}
-        explicit CullingSystem(Camera* cam) : camera(cam) {}
+        explicit CullingSystem(CameraComponent* cam) : camera(cam) {}
 
-        void SetCamera(Camera* cam) {
+        void SetCamera(CameraComponent* cam) {
             camera = cam;
         }
 
-        Camera* GetCamera() {
+        CameraComponent* GetCamera() {
             return camera;
         }
 
@@ -80,11 +81,6 @@ namespace Proto
         std::unordered_map<std::string, Resource> resources;  // All resources referenced in the graph
         std::vector<Pass> passes;                             // All rendering passes in definition order
         std::vector<size_t> executionOrder;                   // Computed optimal execution sequence
-
-        // Automatic synchronization management
-        // These objects ensure correct GPU execution order without manual barriers
-        //std::vector<vk::raii::Semaphore> semaphores;          // GPU synchronization primitives
-        //std::vector<std::pair<size_t, size_t>> semaphoreSignalWaitPairs;  // (signaling pass, waiting pass)
 
         vk::raii::Device& device;  // Vulkan device for resource creation
 
@@ -310,17 +306,6 @@ namespace Proto
     public:
         LightingPass(const std::string& name, GeometryPass* gPass, SceneRenderer* renderer);
 
-        //void AddLight(Light* light) {
-        //    lights.push_back(light);
-        //}
-        //
-        //void RemoveLight(Light* light) {
-        //    auto it = std::find(lights.begin(), lights.end(), light);
-        //    if (it != lights.end()) {
-        //        lights.erase(it);
-        //    }
-        //}
-
     protected:
         virtual void BeginPass(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) override;
         void Render(vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex) override;
@@ -355,11 +340,14 @@ namespace Proto
 
     // Ensure our standard Uniform Buffer memory layout is explicitly defined
     struct PBRUniformBufferObject {
-        //glm::mat4 model;
         glm::mat4 view;
         glm::mat4 proj;
-        glm::vec4 lightPositions[4];
-        glm::vec4 lightColors[4];
+        glm::mat4 lightSpaceMatrices[4];
+        glm::ivec4 lightShadowEnabled;
+        glm::vec4 lightPositions[4];   // xyz = pos (or dir if w==0), w = type (0=Dir, 1=Point, 2=Spot)
+        glm::vec4 lightColors[4];      // rgb = color * intensity, a = radius
+        glm::vec4 lightDirections[4];  // xyz = spot forward dir, w = cos(outerCone)
+        glm::vec4 lightConeParams[4];  // x = cos(innerCone), y = cos(outerCone)
         glm::vec4 camPos;
         float exposure;
         float gamma;
@@ -412,18 +400,135 @@ namespace Proto
         vk::raii::PipelineLayout m_DeferredPipelineLayout{ nullptr };
         vk::raii::Pipeline       m_DeferredPipeline{ nullptr };
         vk::raii::DescriptorSetLayout m_DeferredSetLayout{ nullptr };
+
+        vk::raii::Pipeline m_TransparentPipeline{ nullptr };
+    public:
+        struct ShadowMapPushConstants {
+            glm::mat4 lightSpaceMatrix;
+            glm::mat4 modelMatrix;
+        };
+
+        struct DeferredShadowPushConstants {
+            glm::mat4 lightSpaceMatrix;
+            int shadowEnabled;
+        };
+
+        struct BloomPushConstants {
+            glm::vec2 direction;
+            float threshold;
+            float bloomIntensity;
+        };
+
+        static constexpr uint32_t MAX_PARTICLES = 4096;
+
+        struct ParticleData {
+            glm::vec4 position;
+            glm::vec4 velocity;
+            glm::vec4 color;
+        };
+
+        struct ParticlePushConstants {
+            glm::vec4 emitterPos;   // xyz = world spawn origin, w = deltaTime
+            glm::vec4 emitterDir;   // xyz = world emit direction, w = spread
+            glm::vec4 particleCol;  // rgb = color * HDRIntensity, a = gravity
+            glm::vec4 lifeAndSize;  // x = minLife, y = maxLife, z = initialSpeed, w = particleSize
+            glm::vec4 camRight;     // xyz = camera right, w = elapsedTime
+            glm::vec4 camUp;        // xyz = camera up, w = activeParticleCount
+        }; // 6 * 16 = 96 bytes (safely under 128 bytes!)
+
+        vk::raii::DescriptorSet m_DeferredGBufferSet{ nullptr };
+
+        vk::raii::PipelineLayout m_ShadowPipelineLayout{ nullptr };
+        vk::raii::Pipeline m_ShadowPipeline{ nullptr };
+
+        float m_EmissiveStrength = 1.0f;
+        float m_BloomIntensity = 0.15f;
+        float m_IBLIntensity = 0.25f;
+
+        struct SSRPushConstants {
+            float maxDistance = 25.0f;
+            float stepSize = 0.35f;
+            float thickness = 0.45f;
+            float ssrIntensity = 0.85f;
+        };
+
+        float m_SSRIntensity = 0.85f;
+        float m_SSRMaxDistance = 25.0f;
+        float m_SSRThickness = 0.22f;
+
+        vk::raii::DescriptorSetLayout m_BloomSetLayout{ nullptr };
+        vk::raii::PipelineLayout m_BloomPipelineLayout{ nullptr };
+        vk::raii::Pipeline m_BloomExtractPipeline{ nullptr };
+        vk::raii::Pipeline m_BloomBlurPipeline{ nullptr };
+        vk::raii::Pipeline m_BloomCompositePipeline{ nullptr };
+
+        vk::raii::DescriptorSet m_BloomExtractSet{ nullptr };   // Binding 0: HDRColor
+        vk::raii::DescriptorSet m_BloomBlurHorizSet{ nullptr }; // Binding 0: BloomPing
+        vk::raii::DescriptorSet m_BloomBlurVertSet{ nullptr };  // Binding 0: BloomPong
+        vk::raii::DescriptorSet m_BloomCompositeSet{ nullptr }; // Binding 0: HDRColor, Binding 1: BloomPing
+
+        std::shared_ptr<Texture> m_EnvCubemap{ nullptr };
+        std::shared_ptr<Texture> m_BrdfLutTex{ nullptr };
+        std::string m_ActiveHDRIPath = "";
+
+        vk::raii::DescriptorSetLayout m_SSAOSetLayout{ nullptr };
+        vk::raii::PipelineLayout m_SSAOPipelineLayout{ nullptr };
+        vk::raii::Pipeline m_SSAOPipeline{ nullptr };
+        vk::raii::Pipeline m_SSAOBlurPipeline{ nullptr };
+
+        vk::raii::DescriptorSet m_SSAOSet{ nullptr };     // Binding 0: GBuffer_Position, Binding 1: GBuffer_Normal
+        vk::raii::DescriptorSet m_SSAOBlurSet{ nullptr }; // Binding 0: SSAO_Raw, Binding 1: SSAO_Raw
+
+        vk::raii::Buffer               m_ParticleBuffer{ nullptr };
+        vk::raii::DeviceMemory         m_ParticleMemory{ nullptr };
+        vk::raii::DescriptorSetLayout  m_ParticleSetLayout{ nullptr };
+        vk::raii::DescriptorPool       m_ParticleDescriptorPool{ nullptr };
+        vk::raii::DescriptorSet        m_ParticleSet{ nullptr };
+        vk::raii::PipelineLayout       m_ParticlePipelineLayout{ nullptr };
+        vk::raii::Pipeline             m_ParticleComputePipeline{ nullptr };
+        vk::raii::Pipeline             m_ParticleRenderPipeline{ nullptr };
+
+        vk::raii::DescriptorSetLayout m_SSRSetLayout{ nullptr };
+        vk::raii::PipelineLayout      m_SSRPipelineLayout{ nullptr };
+        vk::raii::Pipeline            m_SSRPipeline{ nullptr };
+        vk::raii::DescriptorSet       m_SSRSet{ nullptr };
+
+        ParticlePushConstants m_LastParticlePC{};
+        bool m_HasActiveParticles = false;
+
+        SSRPushConstants m_SSRPC;
+
+        struct FogPushConstants {
+            glm::mat4 invViewProj{ 1.0f };
+            glm::vec4 fogColorAndDensity{ 0.75f, 0.82f, 0.92f, 0.015f }; // rgb = tint, a = density
+            glm::vec4 scatterAndHeight{ 1.8f, 0.18f, -1.0f, 65.0f };    // x = sunScatter, y = heightFalloff, z = baseHeight, w = maxDist
+        };
+
+        glm::vec3 m_FogColor = glm::vec3(0.75f, 0.82f, 0.92f);
+        float     m_FogDensity = 0.015f; // Set to 0.0f to disable
+        float     m_FogSunScatter = 1.8f;
+        float     m_FogHeightFalloff = 0.18f;
+        float     m_FogBaseHeight = -1.0f;
+        float     m_FogMaxDistance = 65.0f;
+
+        vk::raii::DescriptorSetLayout m_FogSetLayout{ nullptr };
+        vk::raii::PipelineLayout      m_FogPipelineLayout{ nullptr };
+        vk::raii::Pipeline            m_FogPipeline{ nullptr };
+        vk::raii::DescriptorSet       m_FogSet{ nullptr };
+
+        bool CreateFogPipeline();
     public:
         SceneRenderer() = default;
         SceneRenderer(vk::raii::Device& dev, vk::Queue queue);
 
         // No need for explicit destructor with RAII objects
-        void SetCamera(Camera* camera) { cullingSystem.SetCamera(camera); }
+        void SetCamera(CameraComponent* camera) { cullingSystem.SetCamera(camera); }
         void Render(const std::vector<Entity*>& entities, vk::raii::CommandBuffer& activeCmdBuffer, uint32_t imageIndex);
 
         bool CreatePBRPipeline();
         void updateUniformBuffer(uint32_t currentFrame, Entity* entity, CameraComponent* camera, const glm::mat4& modelMatrix = glm::mat4(1.0f));
-        void pushMaterialProperties(vk::CommandBuffer commandBuffer, const Model* model, uint32_t materialIndex, const glm::mat4& globalMatrix);
-        void RenderModelNode(Node* node, const glm::mat4& parentMatrix, vk::raii::CommandBuffer& cmd, const Model* model, CameraComponent* camera);
+        void pushMaterialProperties(vk::CommandBuffer commandBuffer, const Model* model, uint32_t materialIndex, const glm::mat4& globalMatrix, Entity* ownerEntity = nullptr);
+        void RenderModelNode(Node* node, const glm::mat4& parentMatrix, vk::raii::CommandBuffer& cmd, const Model* model, CameraComponent* camera, bool renderTransparentOnly = false, Entity* ownerEntity = nullptr);
         inline vk::DescriptorSetLayout GetPBRDescriptorSetLayout() const { return *descriptorSetLayout; }
 
         // Public getter hook so LightingPass can bind it
@@ -433,7 +538,36 @@ namespace Proto
         vk::DescriptorSetLayout GetDeferredSetLayout() const { return *m_DeferredSetLayout; }
 
         bool CreateDeferredLightingPipeline();
-        vk::raii::DescriptorSet m_DeferredGBufferSet{ nullptr };
+
+        bool CreateShadowPipeline();
+        void ComputeShadowAtlasMatrices(glm::mat4 outMatrices[4], glm::ivec4& outShadowEnabled) const;
+        void RenderShadowPass(vk::raii::CommandBuffer& cmd, const glm::mat4 lightSpaceMatrices[4], const glm::ivec4& shadowEnabled);
+        glm::mat4 ComputeLightSpaceMatrix(bool& outShadowEnabled) const;
+
+        bool CreateTransparentPipeline();
+        void RenderTransparentPass(const std::vector<Entity*>& entities, vk::raii::CommandBuffer& activeCmdBuffer);
+
+        bool CreateBloomPipelines();
+        void ResetRendergraphDescriptorSets() {
+            m_DeferredGBufferSet = nullptr;
+            m_BloomExtractSet = nullptr;
+            m_BloomBlurHorizSet = nullptr;
+            m_BloomBlurVertSet = nullptr;
+            m_BloomCompositeSet = nullptr;
+            m_SSAOSet = nullptr;
+            m_SSAOBlurSet = nullptr;
+            m_SSRSet = nullptr;
+            m_FogSet = nullptr;
+        }
+
+        bool CreateSSAOPipelines();
+
+        bool CreateParticlePipelines();
+        void DispatchAndRenderParticles(vk::raii::CommandBuffer& cmd, float deltaTime);
+
+        void SetEnvironmentHDRI(const std::string& path);
+
+        bool CreateSSRPipeline();
     private:
         void SetupRenderPasses();
         // Internal format utility fallback lookup

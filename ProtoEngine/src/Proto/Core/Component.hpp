@@ -60,46 +60,5 @@ namespace Proto
 
         friend class Entity; // Allow Entity to call protected methods
     };
-
-    // Specific event types
-    //class CollisionEvent : public Event {
-    //private:
-    //    Entity* entity1;
-    //    Entity* entity2;
-    //
-    //public:
-    //    CollisionEvent(Entity* e1, Entity* e2) : entity1(e1), entity2(e2) {}
-    //
-    //    Entity* GetEntity1() const { return entity1; }
-    //    Entity* GetEntity2() const { return entity2; }
-    //};
-    //
-    //// Component that listens for events
-    //// Handles physics-related behavior and responds to collision events through the event system
-    //class PhysicsComponent : public Component, public EventListener {
-    //public:
-    //    void Initialize() override {
-    //        // Register as event listener
-    //        GetEventSystem().AddListener(this);
-    //    }
-    //
-    //    ~PhysicsComponent() override {
-    //        // Unregister as event listener
-    //        GetEventSystem().RemoveListener(this);
-    //    }
-    //
-    //    void OnEvent(const Event& event) override {
-    //        if (auto collisionEvent = dynamic_cast<const CollisionEvent*>(&event)) {
-    //            // Handle collision event
-    //        }
-    //    }
-    //
-    //private:
-    //    EventSystem& GetEventSystem() {
-    //        // Get event system from somewhere (e.g., service locator)
-    //        static EventSystem eventSystem;
-    //        return eventSystem;
-    //    }
-    //};
     
 }

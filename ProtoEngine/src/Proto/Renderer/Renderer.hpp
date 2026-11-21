@@ -1,7 +1,6 @@
 #pragma once
 
 #include "RenderCommand.hpp"
-#include "Camera.hpp"
 
 namespace Proto {
 
@@ -15,19 +14,12 @@ namespace Proto {
 		static void EndScene(); // Updates structure layout matrices
 
 		// Restore tracking interface
-		static void Submit(Camera& camera, float timestep);
+		static void Submit(float timestep);
 
 		// NEW: Absolute frame termination hook
 		static void EndFrame();
 
 		inline static RendererAPI::API GetAPI() { return RendererAPI::GetAPI(); }
-	//private:
-	//	struct SceneData
-	//	{
-	//		glm::mat4 ViewProjectionMatrix;
-	//	};
-	//
-	//	static SceneData* s_SceneData;
 	};
 
 }

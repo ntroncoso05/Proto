@@ -2,8 +2,6 @@
 
 #include <glm/glm.hpp>
 
-#include "VertexArray.hpp"
-#include "Camera.hpp"
 namespace Proto {
 
 	class RendererAPI
@@ -19,11 +17,11 @@ namespace Proto {
 		virtual void SetClearColor(const glm::vec4& color) = 0;
 		virtual void Clear() = 0;
 
-		virtual void DrawIndexed(Camera& camera, float timestep/*const std::shared_ptr<VertexArray>& vertexArray*/) = 0;
+		virtual void DrawIndexed(float timestep) = 0;
 
 		inline static API GetAPI() { return s_API; }
 	
-		// 🟩 ADD THIS SIMPLE INLINE METRIC GETTER
+		// ADD THIS SIMPLE INLINE METRIC GETTER
 		inline static RendererAPI* GetInstance() {
 			// Returns the global static tracking instance allocated at startup
 			return s_RendererAPI;

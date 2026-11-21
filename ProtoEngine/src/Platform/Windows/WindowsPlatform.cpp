@@ -4,14 +4,9 @@
 #include "Events/ApplicationEvent.hpp"
 #include "Events/MouseEvent.hpp"
 #include "Events/KeyEvent.hpp"
-
-#include "Platform/OpenGL/OpenGLContext.hpp"
-
-#include "Platform/Vulkan/VK_Context.hpp"
-//#include "Renderer/Camera.hpp"
-//#include "Core/Core.hpp"
 #include "Core/Log.hpp"
 #include "Core/Application.hpp"
+#include "Platform/Vulkan/VK_Context.hpp"
 
 namespace Proto {
 
@@ -96,12 +91,9 @@ namespace Proto {
 		glfwSetWindowUserPointer(m_Window, &m_Data);
 		glfwSetFramebufferSizeCallback(m_Window, framebufferResizeCallback);
 
-		m_Context = new VulkanContext(m_Window, getRequiredInstanceExtensions()); //new OpenGLContext(m_Window);
+		m_Context = new VulkanContext(m_Window, getRequiredInstanceExtensions());
 		m_Context->Init();
 		createSurface();
-
-
-		//SetVSync(true);
 
 		// Set GLFW callbacks
 		glfwSetWindowSizeCallback(m_Window, [](GLFWwindow* window, int width, int height)
@@ -188,17 +180,11 @@ namespace Proto {
 	void WindowsWindow::OnUpdate()
 	{
 		glfwPollEvents();
-		//m_Context->SwapBuffers();
 	}
 
 	void WindowsWindow::SetVSync(bool enabled)
 	{
-		//if (enabled)
-		//	glfwSwapInterval(1);
-		//else
-		//	glfwSwapInterval(0);
-		//
-		//m_Data.VSync = enabled;
+		
 	}
 
 	bool WindowsWindow::IsVSync() const

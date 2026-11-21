@@ -8,6 +8,8 @@ namespace Proto {
 	class ImGuiLayer : public Layer
 	{
 	public:
+		static inline float s_ScrollDeltaY = 0.0f;
+
 		ImGuiLayer();
 		virtual ~ImGuiLayer() = default;
 

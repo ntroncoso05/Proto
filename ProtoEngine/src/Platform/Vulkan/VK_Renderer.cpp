@@ -9,6 +9,10 @@
 #include "Renderer/ImGuiPipeline.hpp"
 #include "Renderer/RendererPipeline.hpp"
 
+#include <stb_image_write.h>
+#include <filesystem>
+#include <chrono>
+
 namespace Proto
 {
 	// Define the instance tracking allocation
@@ -19,7 +23,7 @@ namespace Proto
 		
 		auto& device = vulkanContext->GetDevice();
 
-		// STEP 1: DEFINE A COMPLETELY ISOLATED POOL FOR IMGUI INTERFACES
+		// DEFINE A COMPLETELY ISOLATED POOL FOR IMGUI INTERFACES
 		std::array<vk::DescriptorPoolSize, 2> imguiPoolSizes = {
 			vk::DescriptorPoolSize{ vk::DescriptorType::eUniformBuffer, 10 },
 			vk::DescriptorPoolSize{ vk::DescriptorType::eCombinedImageSampler, 10 }
@@ -35,7 +39,7 @@ namespace Proto
 		// Allocate the standalone pool handle onto the local device tree
 		vk::raii::DescriptorPool imguiDedicatedPool(device.logicalDevice, imguiPoolInfo);
 
-		// STEP 2: ASSIGN THIS HANDSHAKE SEPARATELY TO IMGUI. This stops ImGui from colliding with Model::doLoad material handles!
+		// ASSIGN THIS HANDSHAKE SEPARATELY TO IMGUI. This stops ImGui from colliding with Model::doLoad material handles!
 		imGui = new ImGuiVulkanUtil(
 			vulkanContext->GetDevice().logicalDevice,
 			vulkanContext->GetDevice().physicalDevice,
@@ -45,34 +49,22 @@ namespace Proto
 			vulkanImage
 		);
 
-		// If ImGuiVulkanUtil exposes a descriptor pool pointer or requires a separate handle pass, 
-		// make sure to transfer ownership or store this handle cleanly within your layer contexts!
+		// If ImGuiVulkanUtil exposes a descriptor pool pointer or requires a separate handle pass, make sure to transfer ownership or store this handle cleanly within your layer contexts!
 		imGui->init(vulkanSwapChain->swapChainExtent.width, vulkanSwapChain->swapChainExtent.height);
 		imGui->initResources(); // No renderPass needed with dynamic rendering
 
-		// FIX 1: FORCE IMGUI TO COMPILE ITS TEXTURE ATLASES AND UPLOAD TO THE GPU IMMEDIATELY!
-		// This executes updateTexture() safely inside a pre-warmed boot timeline, 
-		// guaranteeing that no mid-render staging submissions collide with your frames.
-		//ImGuiIO& io = ImGui::GetIO();
-		//unsigned char* pixels;
-		//int width, height;
-		//io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height); // Forces font pixel extraction
-		//
-		//ImTextureData fontTextureData{};
-		//fontTextureData.Width = width;
-		//fontTextureData.Height = height;
-		//fontTextureData.Pixels = pixels;
-		//fontTextureData.BytesPerPixel = 4;
-		//fontTextureData.Status = ImTextureStatus_WantCreate;
-		//
-		//imGui->updateTexture(&fontTextureData); // Safe boot-stage execution!
-		//std::cout << "[ENGINE SUCCESS]: ImGui font textures uploaded safely at boot time." << std::endl;
+		// Bind FinalColor to ImGui's Viewport descriptor set now that BOTH m_Rendergraph and imGui exist!
+		if (m_Rendergraph) {
+			if (auto* finalColor = m_Rendergraph->GetResource("FinalColor")) {
+				imGui->SetSceneViewportTexture(*finalColor->view);
+			}
+		}
 	}
 
-	void VulkanRenderer::RecreateRendergraph()
+	void VulkanRenderer::RecreateRendergraph(uint32_t _width, uint32_t _height)
 	{
-		uint32_t width = vulkanSwapChain->swapChainExtent.width;
-		uint32_t height = vulkanSwapChain->swapChainExtent.height;
+		uint32_t width = _width;
+		uint32_t height = _height;
 
 		if (width == 0 || height == 0) return;
 
@@ -81,12 +73,13 @@ namespace Proto
 
 		// Reset the persistent G-Buffer descriptor set so LightingPass updates it with the new views
 		if (m_3DRenderer) {
-			m_3DRenderer->m_DeferredGBufferSet = nullptr;
+			m_3DRenderer->ResetRendergraphDescriptorSets();
 		}
 
 		// Rebuild the rendergraph at the new window resolution
 		m_Rendergraph = std::make_unique<Rendergraph>(GetLogicalDevice());
 		m_Rendergraph->SetupDeferredRenderer(*m_Rendergraph, width, height);
+		imGui->SetSceneViewportTexture(*m_Rendergraph->GetResource("FinalColor")->view);
 	}
 
 	VulkanRenderer::VulkanRenderer()
@@ -117,11 +110,11 @@ namespace Proto
 
 		windows.reset(static_cast<WindowsWindow*>(&Application::Get().GetWindow()));
 		VulkanContext* contextPtr = static_cast<VulkanContext*>(windows->GetGraphicsContext());
-		// 1. Maintain context ownership inside root unique tracker
+		// Maintain context ownership inside root unique tracker
 		vulkanContext.reset(contextPtr);
 		vulkanContext->CreateDevice();
 
-		// 2. Register core subsystems to the unified engine ServiceLocator
+		// Register core subsystems to the unified engine ServiceLocator
 		ServiceLocator::Register<VulkanContext>(vulkanContext.get());
 		ServiceLocator::Register<VulkanDevice>(&vulkanContext->GetDevice());
 
@@ -142,6 +135,7 @@ namespace Proto
 		auto pipelineAlloc = std::make_unique<VulkanPipeline>();
 		ServiceLocator::Register<VulkanPipeline>(pipelineAlloc.get());
 		vulkanPipeline = pipelineAlloc.release();
+
 		// Finish building drivers
 		initVulkan();
 		initImGui();
@@ -152,24 +146,21 @@ namespace Proto
 	{
 		vulkanSwapChain->CreateImageViews();
 		vulkanCommandBuffer->CreateDescriptorSetLayout();
-		//vulkanPipeline->createGraphicsPipeline();
 		vulkanCommandBuffer->CreateCommandPool();
 		vulkanImage->CreateColorResources();
 		vulkanImage->CreateDepthResources();
 		vulkanCommandBuffer->CreateUniformBuffers();
 		vulkanCommandBuffer->CreateDescriptorSets();
 
-		auto modelTextureHandle = resourceManager.Load<Texture>("viking_room"); //TODO: temp change order in Sandbox.cpp ar Application.cpp
-		if (!modelTextureHandle.IsValid()) {
-			std::cerr << "[CRITICAL]: Failed to pre-load 'viking_room' texture view asset during initVulkan!" << std::endl;
+		const unsigned char whitePixel[4] = { 255, 255, 255, 255 };
+		auto defaultWhiteTex = std::make_shared<Texture>("default_white");
+		if (defaultWhiteTex->LoadFromMemory(whitePixel, 1, 1)) {
+			resourceManager.RegisterExternal<Texture>("default_white", defaultWhiteTex);
 		}
+
 		vulkanCommandBuffer->CreateCommandBuffers();
 		createSyncObjects();
 
-		// OVERRIDE GRAPH EXECUTION LAMBDAS TO CALL ENGINE LOGIC
-		// We override the template blocks inside SetupDeferredRenderer to hook straight into your actual SceneRenderer drawing loops!
-		//auto* geoPassNode = m_Rendergraph->GetPass("GeometryPass"); // Assuming you expose a lookup helper or pull from a map
-		// Alternatively, update the exact function mapping inside SetupDeferredRenderer directly:
 		m_3DRenderer = std::make_unique<SceneRenderer>(vulkanContext->GetDevice().logicalDevice, vulkanContext->GetDevice().graphicsQueue);
 		ServiceLocator::Register<SceneRenderer>(m_3DRenderer.get());
 
@@ -179,6 +170,7 @@ namespace Proto
 		// REGISTER DEFERRED MRT ATTACHMENTS AND PASSTHROUGH LAMBDAS TO THE GRAPH ENGINE
 		uint32_t width = vulkanSwapChain->swapChainExtent.width;
 		uint32_t height = vulkanSwapChain->swapChainExtent.height;
+
 		// Configures GBuffer_Position, GBuffer_Normal, GBuffer_Albedo, Depth, and FinalColor maps automatically
 		m_Rendergraph->SetupDeferredRenderer(*m_Rendergraph, width, height);
 	}
@@ -202,7 +194,7 @@ namespace Proto
 		}
 	}
 
-	void VulkanRenderer::drawFrame(Camera& camera, float timestep)
+	void VulkanRenderer::drawFrame(float timestep)
 	{
 		auto& device = ServiceLocator::Get<VulkanDevice>();
 		auto& swapChain = ServiceLocator::Get<VulkanSwapChain>();
@@ -210,11 +202,13 @@ namespace Proto
 
 		uint32_t frameIdx = swapChain.GetFrameIndex();
 
+		glm::vec2 vpSize = imGui->GetViewportSize();
+
 		if (vulkanContext->framebufferResized)
 		{
 			vulkanContext->framebufferResized = false;
 			swapChain.RecreateSwapChain();
-			RecreateRendergraph();
+			RecreateRendergraph(vpSize.x, vpSize.y);
 			return;
 		}
 
@@ -226,7 +220,7 @@ namespace Proto
 		if (result == vk::Result::eErrorOutOfDateKHR)
 		{
 			swapChain.RecreateSwapChain();
-			RecreateRendergraph();
+			RecreateRendergraph(vpSize.x, vpSize.y);
 			return;
 		}
 
@@ -240,73 +234,74 @@ namespace Proto
 		device.logicalDevice.resetFences(*inFlightFences[frameIdx]);
 
 		imGui->newFrame(swapChain.swapChainExtent);
-		imGui->drawGUI(camera);
-		imGui->updateBuffers();
-
-		//auto& cmdBuffer = cmdSubsystem.commandBuffers[frameIdx];
-		//cmdBuffer.reset();
-		//cmdBuffer.begin({ .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
+		imGui->drawGUI();
+		imGui->updateBuffers(frameIdx);
 
 		// SCENE HANDOFF VIA GLOBAL SERVICE LOCATOR
 		auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
-		pbrRenderer.SetCamera(&camera);
-		//pbrRenderer.Render(Entity::GetActiveSceneEntities(), cmdBuffer, imageIndex);
-		//m_RenderPassManager->Execute(cmdBuffer, imageIndex);
+		CameraComponent* activeCam = nullptr;
+		for (Entity* ent : Entity::GetActiveSceneEntities()) {
+			if (ent && ent->IsActive()) {
+				if (auto* cam = ent->GetComponent<CameraComponent>()) {
+					activeCam = cam;
+					break;
+				}
+			}
+		}
+		if (activeCam) {
+			pbrRenderer.SetCamera(activeCam);
+		}
+
+		auto* finalColorResource = m_Rendergraph->GetResource("FinalColor");
+		uint32_t vpWidth = static_cast<uint32_t>(vpSize.x);
+		uint32_t vpHeight = static_cast<uint32_t>(vpSize.y);
+
+		if (vpWidth > 0 && vpHeight > 0 && m_Rendergraph) {
+			if (finalColorResource && (finalColorResource->extent.width != vpWidth || finalColorResource->extent.height != vpHeight)) {
+				vulkanContext->GetDevice().logicalDevice.waitIdle();
+
+				if (m_3DRenderer) {
+					m_3DRenderer->ResetRendergraphDescriptorSets();
+				}
+
+				m_Rendergraph = std::make_unique<Rendergraph>(GetLogicalDevice());
+				m_Rendergraph->SetupDeferredRenderer(*m_Rendergraph, vpWidth, vpHeight);
+				imGui->SetSceneViewportTexture(*m_Rendergraph->GetResource("FinalColor")->view);
+			}
+		}
+
 		// MASTER RECORDING INITIALIZATION
 		auto& frameCmdBuffer = cmdSubsystem.commandBuffers[frameIdx];
 		frameCmdBuffer.reset();
 		frameCmdBuffer.begin({ .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit }); // Open frame stream once
 
-		// EXECUTE THE COMPILED DAG ENGINE. This records resource transitions, geometries, lighting setups, and submissions automatically!
-		// 1. Execute the compiled DAG graph engine to populate G-Buffers and "FinalColor"
+		// EXECUTE THE COMPILED DAG ENGINE. This records resource transitions, geometries, lighting setups, and submissions automatically!, Execute the compiled DAG graph engine to populate G-Buffers and "FinalColor"
 		m_Rendergraph->Execute(frameCmdBuffer, device.graphicsQueue, frameIdx);
 
-		auto* finalColorResource = m_Rendergraph->GetResource("FinalColor");
 		if (finalColorResource)
 		{
 			vk::Image srcGraphImage = *finalColorResource->image;
 			vk::Image dstSwapchainImage = swapChain.swapChainImages[imageIndex];
 
-			// Transition swapchain layout to Transfer Destination state safely
-			vk::ImageMemoryBarrier barrierToBlit{
-				.srcAccessMask = vk::AccessFlagBits::eNone,
-				.dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-				.oldLayout = vk::ImageLayout::eUndefined,
-				.newLayout = vk::ImageLayout::eTransferDstOptimal,
-				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-				.image = dstSwapchainImage,
-				.subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
-			};
-			frameCmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, { barrierToBlit });
-
-			vk::ImageBlit blitRegion{
-				.srcSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1 },
-				.srcOffsets = std::array<vk::Offset3D, 2>{
-					vk::Offset3D{0, 0, 0},
-					vk::Offset3D{ static_cast<int32_t>(finalColorResource->extent.width), static_cast<int32_t>(finalColorResource->extent.height), 1 }
-				},
-				.dstSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1 },
-				.dstOffsets = std::array<vk::Offset3D, 2>{
-					vk::Offset3D{0, 0, 0},
-					vk::Offset3D{ static_cast<int32_t>(swapChain.swapChainExtent.width), static_cast<int32_t>(swapChain.swapChainExtent.height), 1 }
-				}
-			};
-			frameCmdBuffer.blitImage(srcGraphImage, vk::ImageLayout::eTransferSrcOptimal, dstSwapchainImage, vk::ImageLayout::eTransferDstOptimal, { blitRegion }, vk::Filter::eLinear);
-
 			// Transition swapchain layout to Color Attachment state for ImGui overlay writing
 			vk::ImageMemoryBarrier barrierToUI{
-				.srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+				.srcAccessMask = vk::AccessFlagBits::eNone,
 				.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite,
-				.oldLayout = vk::ImageLayout::eTransferDstOptimal,
+				.oldLayout = vk::ImageLayout::eUndefined,
 				.newLayout = vk::ImageLayout::eColorAttachmentOptimal,
 				.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 				.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 				.image = dstSwapchainImage,
-				.subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1}
+				.subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1 }
 			};
-			frameCmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {}, { barrierToUI });
+
+			frameCmdBuffer.pipelineBarrier(
+				vk::PipelineStageFlagBits::eTopOfPipe,
+				vk::PipelineStageFlagBits::eColorAttachmentOutput,
+				{}, {}, {}, { barrierToUI }
+			);
 		}
+
 		// SEPARATE IMGUI PIPELINE TIMELINE RECORDING:
 		// We allocate a secondary, fresh command buffer slice specifically for the UI overlay pass.
 		// This guarantees it never collides with or attempts to append to the finalized rendergraph buffer!
@@ -329,6 +324,75 @@ namespace Proto
 
 		device.graphicsQueue.submit(submitInfo, *inFlightFences[frameIdx]);
 
+		if (m_RequestScreenshot && finalColorResource && *finalColorResource->image) {
+			m_RequestScreenshot = false;
+			device.logicalDevice.waitIdle();
+
+			uint32_t w = finalColorResource->extent.width;
+			uint32_t h = finalColorResource->extent.height;
+			vk::DeviceSize byteSize = static_cast<vk::DeviceSize>(w) * h * 4;
+
+			auto [stagingBuf, stagingMem] = cmdSubsystem.CreateBuffer(
+				byteSize,
+				vk::BufferUsageFlagBits::eTransferDst,
+				vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
+			);
+
+			vk::raii::CommandBuffer copyCmd = cmdSubsystem.BeginSingleTimeCommands();
+
+			vk::ImageMemoryBarrier toSrc{
+				.srcAccessMask = vk::AccessFlagBits::eShaderRead,
+				.dstAccessMask = vk::AccessFlagBits::eTransferRead,
+				.oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+				.newLayout = vk::ImageLayout::eTransferSrcOptimal,
+				.image = *finalColorResource->image,
+				.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+			};
+			copyCmd.pipelineBarrier(vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, { toSrc });
+
+			vk::BufferImageCopy region{
+				.bufferOffset = 0,
+				.imageSubresource = { vk::ImageAspectFlagBits::eColor, 0, 0, 1 },
+				.imageOffset = { 0, 0, 0 },
+				.imageExtent = { w, h, 1 }
+			};
+			copyCmd.copyImageToBuffer(*finalColorResource->image, vk::ImageLayout::eTransferSrcOptimal, *stagingBuf, { region });
+
+			vk::ImageMemoryBarrier toRead{
+				.srcAccessMask = vk::AccessFlagBits::eTransferRead,
+				.dstAccessMask = vk::AccessFlagBits::eShaderRead,
+				.oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+				.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+				.image = *finalColorResource->image,
+				.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+			};
+			copyCmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, { toRead });
+			cmdSubsystem.EndSingleTimeCommands(std::move(copyCmd));
+
+			// Map, swizzle BGRA -> RGBA, and save PNG
+			const uint8_t* src = static_cast<const uint8_t*>(stagingMem.mapMemory(0, byteSize));
+			std::vector<uint8_t> rgba(w * h * 4);
+			for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
+				rgba[i * 4 + 0] = src[i * 4 + 2]; // R
+				rgba[i * 4 + 1] = src[i * 4 + 1]; // G
+				rgba[i * 4 + 2] = src[i * 4 + 0]; // B
+				rgba[i * 4 + 3] = 255;            // Opaque Alpha
+			}
+			stagingMem.unmapMemory();
+
+			std::filesystem::path outDir = std::filesystem::exists("assets") ? "renders" : "../../../renders";
+			std::filesystem::create_directories(outDir);
+
+			static int shotCounter = 1;
+			std::string savePath = m_PendingScreenshotPath.empty()
+				? (outDir / std::format("render_{:03d}.png", shotCounter++)).generic_string()
+				: m_PendingScreenshotPath;
+
+			if (stbi_write_png(savePath.c_str(), static_cast<int>(w), static_cast<int>(h), 4, rgba.data(), static_cast<int>(w * 4))) {
+				std::cout << "[RENDER EXPORT]: Saved clean viewport render to: " << savePath << std::endl;
+			}
+		}
+
 		const vk::PresentInfoKHR presentInfoKHR{
 			.waitSemaphoreCount = 1,
 			.pWaitSemaphores = &*renderFinishedSemaphores[imageIndex],
@@ -341,7 +405,7 @@ namespace Proto
 		if ((result == vk::Result::eSuboptimalKHR) || (result == vk::Result::eErrorOutOfDateKHR))
 		{
 			swapChain.RecreateSwapChain();
-			RecreateRendergraph();
+			RecreateRendergraph(vpSize.x, vpSize.y);
 		}
 		else
 		{
@@ -360,9 +424,9 @@ namespace Proto
 	{}
 	void VulkanRenderer::Clear()
 	{}
-	void VulkanRenderer::DrawIndexed(Camera& camera, float timestep)
+	void VulkanRenderer::DrawIndexed(float timestep)
 	{		
-		drawFrame(camera, timestep);
+		drawFrame(timestep);
 	}
 
 }
