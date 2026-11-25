@@ -8,6 +8,11 @@
 #include "Core/ServiceLocator.hpp" // Ensure ImGuiPipeline is visible
 #include "Renderer/ImGuiPipeline.hpp"
 #include "Renderer/RendererPipeline.hpp"
+#include "Core/Log.hpp"
+
+#ifdef PROTO_PLATFORM_ANDROID
+	#include "Platform/Android/AndroidWindow.hpp"
+#endif
 
 #include <stb_image_write.h>
 #include <filesystem>
@@ -50,6 +55,7 @@ namespace Proto
 		);
 
 		// If ImGuiVulkanUtil exposes a descriptor pool pointer or requires a separate handle pass, make sure to transfer ownership or store this handle cleanly within your layer contexts!
+		imGui->SetColorFormat(vulkanSwapChain->swapChainSurfaceFormat.format);
 		imGui->init(vulkanSwapChain->swapChainExtent.width, vulkanSwapChain->swapChainExtent.height);
 		imGui->initResources(); // No renderPass needed with dynamic rendering
 
@@ -108,8 +114,12 @@ namespace Proto
 
 		ServiceLocator::Register<ResourceManager>(&resourceManager);
 
+#ifndef PROTO_PLATFORM_ANDROID
 		windows.reset(static_cast<WindowsWindow*>(&Application::Get().GetWindow()));
 		VulkanContext* contextPtr = static_cast<VulkanContext*>(windows->GetGraphicsContext());
+#else
+		VulkanContext* contextPtr = &ServiceLocator::Get<VulkanContext>();
+#endif
 		// Maintain context ownership inside root unique tracker
 		vulkanContext.reset(contextPtr);
 		vulkanContext->CreateDevice();
@@ -196,12 +206,12 @@ namespace Proto
 
 	void VulkanRenderer::drawFrame(float timestep)
 	{
+		//PROTO_CORE_INFO("drawFrame start");
 		auto& device = ServiceLocator::Get<VulkanDevice>();
 		auto& swapChain = ServiceLocator::Get<VulkanSwapChain>();
 		auto& cmdSubsystem = ServiceLocator::Get<VulkanCommandBuffer>();
 
 		uint32_t frameIdx = swapChain.GetFrameIndex();
-
 		glm::vec2 vpSize = imGui->GetViewportSize();
 
 		if (vulkanContext->framebufferResized)
@@ -215,12 +225,30 @@ namespace Proto
 		auto fenceResult = device.logicalDevice.waitForFences(*inFlightFences[frameIdx], vk::True, UINT64_MAX);
 		if (fenceResult != vk::Result::eSuccess) throw std::runtime_error("failed to wait for fence!");
 
-		auto [result, imageIndex] = swapChain.swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphores[frameIdx], nullptr);
-
-		if (result == vk::Result::eErrorOutOfDateKHR)
-		{
+		vk::Result result = vk::Result::eSuccess;
+		uint32_t imageIndex = 0;
+		try {
+			std::tie(result, imageIndex) = swapChain.swapChain.acquireNextImage(
+				100'000'000ULL, *presentCompleteSemaphores[frameIdx], nullptr);
+			if (result == vk::Result::eTimeout || result == vk::Result::eNotReady) {
+				return;
+			}
+		}
+		catch (const vk::OutOfDateKHRError&) {
 			swapChain.RecreateSwapChain();
 			RecreateRendergraph(vpSize.x, vpSize.y);
+			return;
+		}
+		catch (const vk::SurfaceLostKHRError&) {
+#ifdef PROTO_PLATFORM_ANDROID
+			device.logicalDevice.waitIdle();
+			swapChain.CleanupSwapChain();
+			static_cast<AndroidWindow&>(Application::Get().GetWindow()).RecreateSurface();
+#endif
+			swapChain.RecreateSwapChain();
+			if (vpSize.x > 0 && vpSize.y > 0) {
+				RecreateRendergraph(vpSize.x, vpSize.y);
+			}
 			return;
 		}
 
@@ -266,6 +294,7 @@ namespace Proto
 
 				m_Rendergraph = std::make_unique<Rendergraph>(GetLogicalDevice());
 				m_Rendergraph->SetupDeferredRenderer(*m_Rendergraph, vpWidth, vpHeight);
+				finalColorResource = m_Rendergraph->GetResource("FinalColor");
 				imGui->SetSceneViewportTexture(*m_Rendergraph->GetResource("FinalColor")->view);
 			}
 		}
@@ -412,7 +441,7 @@ namespace Proto
 			// There are no other success codes than eSuccess; on any error code, presentKHR already threw an exception.
 			assert(result == vk::Result::eSuccess);
 		}
-
+		
 		// Pacing advanced systematically on the tracking layout
 		swapChain.AdvanceFrame();
 

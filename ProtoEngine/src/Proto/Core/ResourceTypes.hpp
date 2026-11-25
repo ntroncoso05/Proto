@@ -8,7 +8,9 @@
 #include <format> // Required for std::format
 #include <filesystem>
 #include <iostream>
-#include <ktx.h>
+#ifndef PROTO_PLATFORM_ANDROID
+    #include <ktx.h>
+#endif
 #include <tiny_gltf.h>
 
 namespace Proto
@@ -23,8 +25,9 @@ namespace Proto
         int width = 0;
         int height = 0;
         int channels = 0;
+#ifndef PROTO_PLATFORM_ANDROID
         ktxTexture* pixels = nullptr;
-
+#endif
         explicit Texture(const std::string& id);
         virtual ~Texture() override;
 
@@ -51,9 +54,9 @@ namespace Proto
             vk::raii::ImageView imageView{ nullptr };
             vk::raii::Sampler sampler{ nullptr };
         } vkData;
-
+#ifndef PROTO_PLATFORM_ANDROID
         ktxTexture* LoadImageData(const std::string& filePath, int* w, int* h, int* ch);
-
+#endif
         bool UploadToGpu(const void* data, vk::DeviceSize imageSize, int texWidth, int texHeight, bool srgb);
         bool m_IsSRGB = true;
     };

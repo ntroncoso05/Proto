@@ -8,6 +8,8 @@
 #include "Platform/Vulkan/VK_BufferUtils.hpp"
 #include "Renderer/RendererPipeline.hpp"
 #include "Core/ServiceLocator.hpp"
+#include "Core/AssetIO.hpp"
+#include "Core/Log.hpp"
 #include <ShaderConfig.hpp>
 
 #include <filesystem>
@@ -182,7 +184,96 @@ namespace Proto
         std::string filePath;
         bool isBinary = false;
         const std::vector<std::string> searchPrefixes = { "", "../", "../../", "../../../" };
+                
+        tinygltf::Model gltfModel;
+        tinygltf::TinyGLTF loader;
+        std::string err, warn;
 
+        loader.SetImageWriter(nullptr, nullptr); // Resets standard handler extensions
+        
+        bool ret = false;
+
+#ifdef PROTO_PLATFORM_ANDROID
+        std::string modelBaseDir;
+        tinygltf::FsCallbacks fsCallbacks{};
+        fsCallbacks.user_data = &modelBaseDir;
+        fsCallbacks.FileExists = [](const std::string& abs_filename, void* user_data) -> bool {
+            if (AssetIO::FileExists(abs_filename)) return true;
+            auto* dir = static_cast<std::string*>(user_data);
+            return (dir && !dir->empty()) ? AssetIO::FileExists(*dir + "/" + abs_filename) : false;
+            };
+        fsCallbacks.ExpandFilePath = [](const std::string& filepath, void*) -> std::string {
+            return filepath;
+            };
+        fsCallbacks.ReadWholeFile = [](std::vector<unsigned char>* out, std::string* err,
+            const std::string& filepath, void* user_data) -> bool {
+                auto bytes = AssetIO::ReadBinaryFile(filepath);
+                if (bytes.empty()) {
+                    auto* dir = static_cast<std::string*>(user_data);
+                    if (dir && !dir->empty()) {
+                        bytes = AssetIO::ReadBinaryFile(*dir + "/" + filepath);
+                    }
+                }
+                if (bytes.empty()) {
+                    if (err) *err += "Failed to read Android asset: " + filepath + "\n";
+                    return false;
+                }
+                out->assign(reinterpret_cast<const unsigned char*>(bytes.data()),
+                    reinterpret_cast<const unsigned char*>(bytes.data()) + bytes.size());
+                return true;
+            };
+        fsCallbacks.WriteWholeFile = [](std::string*, const std::string&,
+            const std::vector<unsigned char>&, void*) -> bool {
+                return false;
+            };
+        loader.SetFsCallbacks(fsCallbacks);
+
+        std::string registeredPath = ServiceLocator::Get<ResourceManager>().GetAssetPath(GetId());
+        std::vector<std::string> candidates = {
+            registeredPath,
+            std::format("assets/models/{}.glb", GetId()),
+            std::format("assets/models/{}.gltf", GetId()),
+            std::format("assets/models/{}/{}.glb", GetId(), GetId()),
+            std::format("assets/models/{}/{}.gltf", GetId(), GetId()),
+            std::format("assets/models/{}/scene.gltf", GetId())
+        };
+
+        for (const auto& c : candidates) {
+            if (!c.empty() && AssetIO::FileExists(c)) {
+                filePath = c;
+                modelBaseDir = std::filesystem::path(filePath).parent_path().generic_string();
+                isBinary = (std::filesystem::path(filePath).extension() == ".glb");
+                break;
+            }
+        }
+
+        if (filePath.empty()) {
+            //std::cerr << "[ERROR]: Android Model (.glb or .gltf) not found for ID: " << GetId() << std::endl;
+            PROTO_CORE_ERROR("Android Model not found for ID: {}", GetId());
+            return false;
+        }
+
+        auto modelBytes = AssetIO::ReadBinaryFile(filePath);
+        if (modelBytes.empty()) {
+            PROTO_CORE_ERROR("Failed to read model bytes from Android asset: {}", filePath);
+            return false;
+        }
+
+        if (isBinary) {
+            ret = loader.LoadBinaryFromMemory(
+                &gltfModel, &err, &warn,
+                reinterpret_cast<const unsigned char*>(modelBytes.data()),
+                static_cast<unsigned int>(modelBytes.size()),
+                modelBaseDir, 0);
+        }
+        else {
+            ret = loader.LoadASCIIFromString(
+                &gltfModel, &err, &warn,
+                modelBytes.data(),
+                static_cast<unsigned int>(modelBytes.size()),
+                modelBaseDir, 0);
+        }
+#else
         // 1. Check for .glb first, then fallback to .gltf
         for (const auto& prefix : searchPrefixes) {
             std::string glbCandidate = std::format("{}assets/models/{}.glb", prefix, GetId());
@@ -207,26 +298,20 @@ namespace Proto
         }
 
         if (filePath.empty()) {
-            std::cerr << "[ERROR]: Model file (.glb or .gltf) not found for ID: " << GetId() << std::endl;
+            PROTO_CORE_ERROR("Android Model not found for ID: {}", GetId());
             return false;
         }
 
-        tinygltf::Model gltfModel;
-        tinygltf::TinyGLTF loader;
-        std::string err, warn;
-
-        loader.SetImageWriter(nullptr, nullptr); // Resets standard handler extensions
-        
-        bool ret = false;
         if (isBinary) {
             ret = loader.LoadBinaryFromFile(&gltfModel, &err, &warn, filePath, 0);
         }
         else {
             ret = loader.LoadASCIIFromFile(&gltfModel, &err, &warn, filePath, 0);
         }
+#endif
 
-        if (!warn.empty()) std::cout << "[WARN]: glTF: " << warn << std::endl;
-        if (!err.empty())  std::cerr << "[ERROR]: glTF: " << err << std::endl;
+        if (!warn.empty()) PROTO_CORE_WARN("glTF load error for '{}': {}", GetId(), warn);
+        if (!err.empty()) PROTO_CORE_ERROR("glTF load error for '{}': {}", GetId(), err);
         if (!ret) return false;
 
         std::cout << "[ENGINE DEBUG]: glTF Loaded Successfully!" << std::endl;
@@ -671,6 +756,7 @@ namespace Proto
 
 	bool Texture::doLoad()
     {
+#ifndef PROTO_PLATFORM_ANDROID
         // 1. Build a root-relative path layout string cleanly
         std::string filePath = std::format("assets/textures/{}.ktx2", GetId());
 
@@ -698,7 +784,6 @@ namespace Proto
             std::cout << "[ERROR]: ktxTexture allocation returned nullptr for file: " << filePath << std::endl;
             return false;
         }
-
         // Extract properties directly from the allocated KTX engine container fields
         this->width = pixels->baseWidth;
         this->height = pixels->baseHeight;
@@ -707,7 +792,7 @@ namespace Proto
 
         // Double check that values are completely sane before passing to Vulkan
         if (this->width == 0 || this->height == 0) {
-            std::cout << "[ERROR]: KTX2 Texture contains invalid 0x0 base dimensions!" << std::endl;
+            PROTO_CORE_ERROR("[ERROR]: KTX2 Texture contains invalid 0x0 base dimensions!");
             return false;
         }
 
@@ -718,6 +803,31 @@ namespace Proto
         pixels = nullptr;
 
         return ok; //true;
+#else 
+        std::vector<std::string> texCandidates = {
+            std::format("assets/textures/{}.png", GetId()),
+            std::format("assets/textures/{}.jpg", GetId()),
+            std::format("assets/textures/{}.jpeg", GetId())
+        };
+        for (const auto& path : texCandidates) {
+            auto bytes = AssetIO::ReadBinaryFile(path);
+            if (bytes.empty()) continue;
+
+            int w = 0, h = 0, ch = 0;
+            stbi_uc* decoded = stbi_load_from_memory(
+                reinterpret_cast<const stbi_uc*>(bytes.data()),
+                static_cast<int>(bytes.size()), &w, &h, &ch, 4);
+            if (decoded && w > 0 && h > 0) {
+                this->width = w;
+                this->height = h;
+                this->channels = 4;
+                bool ok = UploadToGpu(decoded, static_cast<vk::DeviceSize>(w) * h * 4, w, h, m_IsSRGB);
+                stbi_image_free(decoded);
+                return ok;
+            }
+        }
+        return false;
+#endif
     }
 
     void Texture::doUnload()
@@ -729,7 +839,7 @@ namespace Proto
     bool Texture::LoadFromMemory(const unsigned char* pixelData, int texWidth, int texHeight, bool srgb)
     {
         if (!pixelData || texWidth <= 0 || texHeight <= 0) {
-            std::cerr << "[ERROR]: Invalid embedded texture pixel buffer for: " << GetId() << std::endl;
+            PROTO_CORE_ERROR("[ERROR]: Invalid embedded texture pixel buffer for: {}", GetId());
             return false;
         }
 
@@ -752,15 +862,15 @@ namespace Proto
 
     bool Texture::LoadCubemap(const std::string& filePath)
     {
-        ktxTexture* kTexture = nullptr;
-        if (ktxTexture_CreateFromNamedFile(filePath.c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &kTexture) != KTX_SUCCESS || !kTexture) {
-            std::cerr << "[CUBEMAP ERROR]: Failed to load KTX2 cubemap: " << filePath << std::endl;
-            return false;
-        }
-
         auto& renderer = VulkanRenderer::Get();
         auto& logicalDevice = renderer.GetLogicalDevice();
         auto* cmdUtil = renderer.GetCommandBuffer();
+#ifndef PROTO_PLATFORM_ANDROID
+        ktxTexture* kTexture = nullptr;
+        if (ktxTexture_CreateFromNamedFile(filePath.c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &kTexture) != KTX_SUCCESS || !kTexture) {
+            PROTO_CORE_ERROR("[CUBEMAP ERROR]: Failed to load KTX2 cubemap: {}", filePath);
+            return false;
+        }
 
         uint32_t texWidth = kTexture->baseWidth;
         uint32_t texHeight = kTexture->baseHeight;
@@ -853,6 +963,9 @@ namespace Proto
         struct ResourceAccessor : public Resource { static void Confirm(Resource* r) { r->loaded = true; } };
         ResourceAccessor::Confirm(this);
         return true;
+#else
+        return false;
+#endif
     }
 
     bool Texture::CreateProceduralStudioCubemap(uint32_t size)
@@ -1014,15 +1127,23 @@ namespace Proto
 
     bool Texture::LoadHDRI(const std::string& filepath, uint32_t faceSize)
     {
+        int srcW = 0, srcH = 0, srcChannels = 0;
+
+#ifdef PROTO_PLATFORM_ANDROID
+        auto hdrBytes = AssetIO::ReadBinaryFile(filepath);
+        float* hdrPixels = hdrBytes.empty() ? nullptr : stbi_loadf_from_memory(
+            reinterpret_cast<const stbi_uc*>(hdrBytes.data()),
+            static_cast<int>(hdrBytes.size()), &srcW, &srcH, &srcChannels, 4);
+#else
         std::string resolvedPath = filepath;
         if (!std::filesystem::exists(resolvedPath)) {
             resolvedPath = std::string(ROOT_WORKSPACE_DIR) + filepath;
         }
-
-        int srcW = 0, srcH = 0, srcChannels = 0;
         float* hdrPixels = stbi_loadf(resolvedPath.c_str(), &srcW, &srcH, &srcChannels, 4);
+#endif
+
         if (!hdrPixels || srcW <= 0 || srcH <= 0) {
-            std::cerr << "[HDRI WARN]: Failed to load '" << filepath << "'. Using procedural studio fallback." << std::endl;
+            PROTO_CORE_ERROR("[HDRI WARN]: Failed to load '{}'. Using procedural studio fallback.", filepath);
             CreateProceduralStudioCubemap(64);
             return false;
         }
@@ -1216,9 +1337,9 @@ namespace Proto
         return true;
     }
 
+#ifndef PROTO_PLATFORM_ANDROID
     ktxTexture* Texture::LoadImageData(const std::string& filePath, int* w, int* h, int* ch)
     {
-        // Load KTX2 texture instead of using stb_image
         ktxTexture* kTexture;
         KTX_error_code result = ktxTexture_CreateFromNamedFile(
             filePath.c_str(),
@@ -1228,9 +1349,9 @@ namespace Proto
         if (result != KTX_SUCCESS) {
             throw std::runtime_error("failed to load ktx texture image!");
         }
-
         return kTexture;
     }
+#endif
 
     bool Texture::UploadToGpu(const void* data, vk::DeviceSize imageSize, int texWidth, int texHeight, bool srgb)
     {

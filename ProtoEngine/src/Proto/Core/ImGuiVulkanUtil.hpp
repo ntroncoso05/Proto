@@ -108,5 +108,10 @@ namespace Proto
         bool showViewportOverlays = true;
         bool autoTurntable = false;
         float turntableSpeed = 20.0f;
+
+        void SetColorFormat(vk::Format format) {
+            colorFormat = format;
+            renderingInfo.pColorAttachmentFormats = &colorFormat;
+        }
     };
 }

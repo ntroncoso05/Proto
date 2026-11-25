@@ -6,9 +6,11 @@
 #include "Platform/Vulkan/VK_Swapchain.hpp"
 #include "Platform/Vulkan/VK_Image.hpp"
 #include "Platform/Vulkan/VK_Renderer.hpp"
+#include "Core/Application.hpp"
 #include "Core/ServiceLocator.hpp"
-
-#include <GLFW/glfw3.h>
+#ifndef PROTO_PLATFORM_ANDROID
+	#include <GLFW/glfw3.h>
+#endif
 
 namespace Proto
 {
@@ -35,6 +37,9 @@ namespace Proto
 	static vk::PresentModeKHR ChooseSwapPresentMode(std::vector<vk::PresentModeKHR> const& availablePresentModes)
 	{
 		assert(std::ranges::any_of(availablePresentModes, [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
+#ifdef PROTO_PLATFORM_ANDROID
+		return vk::PresentModeKHR::eFifo;
+#endif
 		return std::ranges::any_of(availablePresentModes,
 			[](const vk::PresentModeKHR value) { return vk::PresentModeKHR::eMailbox == value; }) ?
 			vk::PresentModeKHR::eMailbox :
@@ -65,16 +70,21 @@ namespace Proto
 		depthImageView = imgUtil->CreateImageView(*depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
 	}
 
+
 	vk::Extent2D VulkanSwapChain::ChooseSwapExtent(vk::SurfaceCapabilitiesKHR const& capabilities)
 	{
-		auto& context = ServiceLocator::Get<VulkanContext>();
 		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
 		{
 			return capabilities.currentExtent;
 		}
+#ifndef PROTO_PLATFORM_ANDROID
+		auto& context = ServiceLocator::Get<VulkanContext>();
 		int width, height;
-		glfwGetFramebufferSize(context.GetWindow(), &width, &height);
-
+		glfwGetFramebufferSize((GLFWwindow*)context.GetWindow(), &width, &height);
+#else
+		int width = static_cast<int>(Application::Get().GetWindow().GetWidth());
+		int height = static_cast<int>(Application::Get().GetWindow().GetHeight());
+#endif
 		return {
 			std::clamp<uint32_t>(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
 			std::clamp<uint32_t>(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height) };
@@ -96,6 +106,11 @@ namespace Proto
 		std::vector<vk::PresentModeKHR> availablePresentModes = device.physicalDevice.getSurfacePresentModesKHR(_surface);
 		vk::PresentModeKHR              presentMode = ChooseSwapPresentMode(availablePresentModes);
 
+		vk::SurfaceTransformFlagBitsKHR preTransform =
+			(surfaceCapabilities.supportedTransforms & vk::SurfaceTransformFlagBitsKHR::eIdentity)
+			? vk::SurfaceTransformFlagBitsKHR::eIdentity
+			: surfaceCapabilities.currentTransform;
+
 		vk::SwapchainCreateInfoKHR swapChainCreateInfo{ .surface = _surface,
 													   .minImageCount = minImageCount,
 													   .imageFormat = swapChainSurfaceFormat.format,
@@ -104,7 +119,7 @@ namespace Proto
 													   .imageArrayLayers = 1,
 													   .imageUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst,
 													   .imageSharingMode = vk::SharingMode::eExclusive,
-													   .preTransform = surfaceCapabilities.currentTransform,
+													   .preTransform = preTransform, //.preTransform = surfaceCapabilities.currentTransform,
 													   .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
 													   .presentMode = presentMode,
 													   .clipped = true };
@@ -127,11 +142,12 @@ namespace Proto
 
 	void VulkanSwapChain::RecreateSwapChain()
 	{
-		auto& context = ServiceLocator::Get<VulkanContext>();
 		auto& device = ServiceLocator::Get<VulkanDevice>();
 		auto& image = ServiceLocator::Get<VulkanImage>();
 
-		auto window = context.GetWindow();
+#ifndef PROTO_PLATFORM_ANDROID
+		auto& context = ServiceLocator::Get<VulkanContext>();
+		auto window = (GLFWwindow*)context.GetWindow();
 		int width = 0, height = 0;
 		glfwGetFramebufferSize(window, &width, &height);
 		while ((width == 0 || height == 0) && !glfwWindowShouldClose(window))
@@ -139,10 +155,11 @@ namespace Proto
 			glfwGetFramebufferSize(window, &width, &height);
 			glfwWaitEvents();
 		}
-		if (glfwWindowShouldClose(window))
-		{
+		if (glfwWindowShouldClose(window)) return;
+#else
+		if (Application::Get().GetWindow().GetWidth() == 0 || Application::Get().GetWindow().GetHeight() == 0)
 			return;
-		}
+#endif
 
 		device.logicalDevice.waitIdle();
 

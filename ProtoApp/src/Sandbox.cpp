@@ -18,7 +18,7 @@ class ExampleLayer : public Proto::Layer
 public:
 	ExampleLayer() : Layer("Example"){	}
 
-	// Helper in Sandbox.cpp: Compute true local-space AABB of a Model (including glTF node matrices)
+	// Helper function: Compute true local-space AABB of a Model (including glTF node matrices)
 	static Proto::BoundingBox GetModelLocalAABB(Proto::Model* model)
 	{
 		Proto::BoundingBox box;
@@ -91,6 +91,16 @@ public:
 			if (entPtr && entPtr->IsActive() && entPtr->GetComponent<Proto::CameraComponent>()) {
 				cameraEntity = entPtr.get();
 				break;
+			}
+		}
+
+		auto imGuiUtil = Proto::VulkanRenderer::Get().imGui;
+		if (cameraEntity && imGuiUtil) {
+			glm::vec2 vp = imGuiUtil->GetViewportSize();
+			if (vp.x > 0.0f && vp.y > 0.0f) {
+				if (auto* cam = cameraEntity->GetComponent<Proto::CameraComponent>()) {
+					cam->SetPerspective(cam->GetFOV(), vp.x / vp.y, 0.1f, 100.0f);
+				}
 			}
 		}
 
@@ -167,7 +177,9 @@ public:
 			if (altDown || !imGuiUtil || !imGuiUtil->IsViewportHovered() || ImGuizmo::IsOver()) return false;
 
 			// ... existing ray-AABB entity picking using Proto::Input::GetMousePosition() ...
-			glm::vec2 mousePos = Proto::Input::GetMousePosition();
+			//glm::vec2 mousePos = Proto::Input::GetMousePosition();
+			ImVec2 mp = ImGui::GetIO().MousePos;
+			glm::vec2 mousePos(mp.x, mp.y);
 
 			glm::vec2 vpMin = imGuiUtil->GetViewportMin();
 			glm::vec2 vpSize = imGuiUtil->GetViewportSize();
@@ -266,7 +278,7 @@ public:
 
 		if (!modelHandle.IsValid() || modelHandle->nodes.empty()) {
 			std::cerr << "[ERROR]: Viking Room model container failed to load or has 0 meshes!" << std::endl;
-			return;
+			//return;
 		}
 
 		// Change from raw pointer leak to safe class unique_ptr allocation!
@@ -277,32 +289,32 @@ public:
 		auto* camTransform = entityC->AddComponent<Proto::TransformComponent>();
 		camTransform->SetPosition(glm::vec3(0.0f, 3.0f, 10.0f));
 		entityC->Initialize();
+		if (modelHandle.IsValid() && !modelHandle->nodes.empty()) {
+			auto* entityR = m_ActiveScene->CreateEntity("VikingRoom");
+			auto* roomTransform = entityR->AddComponent<Proto::TransformComponent>();
+			roomTransform->SetScale(glm::vec3(1.0f, 1.0f, 1.0f));
+			roomTransform->SetPosition(glm::vec3(0.0f, 0.0f, 0.0f));
+			// Inject ModelComponent instead of MeshComponent!
+			entityR->AddComponent<Proto::ModelComponent>(modelHandle);
+			entityR->Initialize();
 
-		auto* entityR = m_ActiveScene->CreateEntity("VikingRoom");
-		auto* roomTransform = entityR->AddComponent<Proto::TransformComponent>();
-		roomTransform->SetScale(glm::vec3(1.0f, 1.0f, 1.0f));
-		roomTransform->SetPosition(glm::vec3(0.0f, 0.0f, 0.0f));
-		// Inject ModelComponent instead of MeshComponent!
-		entityR->AddComponent<Proto::ModelComponent>(modelHandle);
-		entityR->Initialize();
+			// Create the Planet Node
+			auto* entityP = m_ActiveScene->CreateEntity("Planet_Root");
+			auto* pTrans = entityP->AddComponent<Proto::TransformComponent>();
+			entityP->AddComponent<Proto::ModelComponent>(modelHandle);
+			pTrans->SetPosition(glm::vec3(-6.0f, 0.0f, -5.0f));
+			pTrans->SetScale(glm::vec3(1.5f));
+			entityP->Initialize();
 
-		// Create the Planet Node
-		auto* entityP = m_ActiveScene->CreateEntity("Planet_Root");
-		auto* pTrans = entityP->AddComponent<Proto::TransformComponent>();
-		entityP->AddComponent<Proto::ModelComponent>(modelHandle);
-		pTrans->SetPosition(glm::vec3(-6.0f, 0.0f, -5.0f));
-		pTrans->SetScale(glm::vec3(1.5f));
-		entityP->Initialize();
-
-		// Create the Child Moon Node
-		auto* entityM = m_ActiveScene->CreateEntity("Moon_Child");
-		auto* cTrans = entityM->AddComponent<Proto::TransformComponent>();		
-		entityM->AddComponent<Proto::ModelComponent>(modelHandle);
-		cTrans->SetPosition(glm::vec3(3.5f, 0.0f, 0.0f));
-		cTrans->SetScale(glm::vec3(0.5f));
-		entityM->SetParent(entityP);
-		entityM->Initialize();
-
+			// Create the Child Moon Node
+			auto* entityM = m_ActiveScene->CreateEntity("Moon_Child");
+			auto* cTrans = entityM->AddComponent<Proto::TransformComponent>();
+			entityM->AddComponent<Proto::ModelComponent>(modelHandle);
+			cTrans->SetPosition(glm::vec3(3.5f, 0.0f, 0.0f));
+			cTrans->SetScale(glm::vec3(0.5f));
+			entityM->SetParent(entityP);
+			entityM->Initialize();
+		}
 		auto* entityL = m_ActiveScene->CreateEntity("MainLight");
 		auto* lightTransform = entityL->AddComponent<Proto::TransformComponent>();
 		lightTransform->SetPosition(glm::vec3(3.0f, 5.0f, 4.0f));

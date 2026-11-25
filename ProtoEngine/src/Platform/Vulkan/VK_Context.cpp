@@ -7,15 +7,15 @@
 const std::vector<char const*> validationLayers = {
 	"VK_LAYER_KHRONOS_validation" };
 
-#ifdef NDEBUG
-constexpr bool enableValidationLayers = false;
+#if defined(NDEBUG) || defined(PROTO_PLATFORM_ANDROID)
+	constexpr bool enableValidationLayers = false;
 #else
-constexpr bool enableValidationLayers = true;
+	constexpr bool enableValidationLayers = true;
 #endif
 
 namespace Proto
 {
-	VulkanContext::VulkanContext(GLFWwindow* windowHandle, const std::vector<const char*>& _requiredExtensions) : m_Window(windowHandle), m_RequiredExtensions(_requiredExtensions)
+	VulkanContext::VulkanContext(void* windowHandle, const std::vector<const char*>& _requiredExtensions) : m_Window(windowHandle), m_RequiredExtensions(_requiredExtensions)
 	{}
 
 	void VulkanContext::Init()
@@ -44,7 +44,7 @@ namespace Proto
 											  .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
 											  .pEngineName = "Proto Engine",
 											  .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-											  .apiVersion = vk::ApiVersion14 };
+											  .apiVersion = vk::ApiVersion13 };
 
 		// Get the required layers
 		std::vector<char const*> requiredLayers;

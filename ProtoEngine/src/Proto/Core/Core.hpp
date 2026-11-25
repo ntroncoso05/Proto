@@ -5,8 +5,13 @@
 #endif
 
 #ifdef PROTO_ENABLE_ASSERTS
-	#define PROTO_ASSERT(x, ...) { if(!(x)) { PROTO_ERROR("Assertion Failed: {0}", __VA_ARGS__); __debugbreak(); } }
-	#define PROTO_CORE_ASSERT(x, ...) { if(!(x)) { PROTO_CORE_ERROR("Assertion Failed: {0}", __VA_ARGS__); __debugbreak(); } }
+	#ifdef PROTO_PLATFORM_WINDOWS
+		#define PROTO_DEBUGBREAK() __debugbreak()
+	#else
+		#define PROTO_DEBUGBREAK() __builtin_trap()
+	#endif
+		#define PROTO_ASSERT(x, ...) { if(!(x)) { PROTO_ERROR("Assertion Failed: {0}", __VA_ARGS__); PROTO_DEBUGBREAK(); } }
+		#define PROTO_CORE_ASSERT(x, ...) { if(!(x)) { PROTO_CORE_ERROR("Assertion Failed: {0}", __VA_ARGS__); PROTO_DEBUGBREAK(); } }
 #else
 	#define PROTO_ASSERT(x, ...)
 	#define PROTO_CORE_ASSERT(x, ...)

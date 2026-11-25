@@ -96,7 +96,8 @@ namespace Proto
 		commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, {}, {}, barrier);
 	}
 
-	void VulkanImage::CreateTextureImage(/*unsigned char* pixels*/ktxTexture* kTexture, int width, int height, int channels)
+#ifndef PROTO_PLATFORM_ANDROID
+	void VulkanImage::CreateTextureImage(ktxTexture* kTexture, int width, int height, int channels)
 	{
 
 		// Get texture dimensions and data
@@ -139,7 +140,7 @@ namespace Proto
 		TransitionImageLayout(commandBuffer, textureImage, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, mipLevels);
 		cmdBuffer.EndSingleTimeCommands(std::move(commandBuffer));
 	}
-
+#endif
 	void VulkanImage::CreateTextureImageView()
 	{
 		textureImageView = CreateImageView(*textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor, mipLevels);
@@ -224,6 +225,7 @@ namespace Proto
 			vk::FormatFeatureFlagBits::eDepthStencilAttachment);
 	}
 
+#ifndef PROTO_PLATFORM_ANDROID
 	void VulkanImage::GenerateMipmaps(vk::raii::CommandBuffer& commandBuffer,
 		vk::raii::Image& image,
 		vk::Format               imageFormat,
@@ -297,6 +299,7 @@ namespace Proto
 
 		commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barrier);
 	}
+#endif
 
 	void VulkanImage::CreateColorResources()
 	{

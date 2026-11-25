@@ -9,26 +9,16 @@
 
 #include "Core/ServiceLocator.hpp"
 #include "ShaderConfig.hpp"
-#include <filesystem>
-#include <fstream>
+//#include <filesystem>
+//#include <fstream>
+#include "Core/AssetIO.hpp"
 
 namespace Proto
 {
 
     std::vector<char> VulkanPipeline::readFile(const std::string& filename)
     {
-        std::string finalPath = filename;
-        if (!std::filesystem::exists(finalPath)) {
-            finalPath = std::string(ROOT_WORKSPACE_DIR) + filename;
-        }
-        std::ifstream file(finalPath, std::ios::ate | std::ios::binary);
-        if (!file.is_open()) {
-            throw std::runtime_error("failed to open file: " + finalPath);
-        }
-        std::vector<char> buffer(file.tellg());
-        file.seekg(0, std::ios::beg);
-        file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        return buffer;
+        return AssetIO::ReadBinaryFile(filename);
     }
 
     vk::raii::ShaderModule VulkanPipeline::createShaderModule(const std::vector<char>& code)
@@ -70,7 +60,7 @@ namespace Proto
         std::vector<vk::DynamicState> dynamicStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
         vk::PipelineDynamicStateCreateInfo dynamicState{ .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()), .pDynamicStates = dynamicStates.data() };
 
-        // 🟩 STEP 1: MANUALLY DEFINE THE BINDINGS REQUIRED BY BASE.SLANG
+        // MANUALLY DEFINE THE BINDINGS REQUIRED BY BASE.SLANG
         std::array<vk::DescriptorSetLayoutBinding, 2> baseBindings = {
             vk::DescriptorSetLayoutBinding{
                 .binding = 0,
@@ -96,7 +86,7 @@ namespace Proto
 
         vk::DescriptorSetLayout activeSetLayouts[] = { *baseDescriptorSetLayout };
 
-        // 🟩 2. MAP THE EXACT 64-BYTE ALIGNED MATERIAL CONSTANTS BLOCK
+        // MAP THE EXACT 64-BYTE ALIGNED MATERIAL CONSTANTS BLOCK
         // This fixes the validation error regarding missing push constant ranges!
         vk::PushConstantRange basePushConstantsRange{
             .stageFlags = vk::ShaderStageFlagBits::eVertex,
@@ -109,7 +99,7 @@ namespace Proto
             .setLayoutCount = 1,
             .pSetLayouts = activeSetLayouts,
             .pushConstantRangeCount = 1,
-            .pPushConstantRanges = &basePushConstantsRange // 🟩 Map the base range, NOT the PBR struct block!
+            .pPushConstantRanges = &basePushConstantsRange // Map the base range, NOT the PBR struct block!
         };
 
 

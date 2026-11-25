@@ -5,6 +5,7 @@
 #include "Core/Entity.hpp"
 #include "Core/ComponentTypes.hpp"
 #include "Platform/Vulkan/VK_Renderer.hpp"
+#include "Core/Log.hpp"
 
 namespace Proto
 {
@@ -93,7 +94,7 @@ namespace Proto
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "[FOG ERROR]: " << e.what() << std::endl;
+            PROTO_CORE_ERROR("[FOG ERROR]: {}", e.what());
             return false;
         }
     }
@@ -125,10 +126,8 @@ namespace Proto
 
     void SceneRenderer::Render(const std::vector<Entity*>& entities, vk::raii::CommandBuffer& activeCmdBuffer, uint32_t imageIndex)
     {
+        if (!*pbrPipeline || !*pbrPipelineLayout) return;
         auto visibleEntities = entities;
-        //if (visibleEntities.empty()) {
-        //    visibleEntities = entities;
-        //}
 
         auto& renderer = VulkanRenderer::Get();
         auto& logicalDevice = renderer.GetLogicalDevice();
@@ -278,7 +277,7 @@ namespace Proto
             auto& lowLevelRenderer = VulkanRenderer::Get();
             auto& device = lowLevelRenderer.GetLogicalDevice();
 
-            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/pbr.spv");
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/PBR.spv");
             vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
 
             vk::PipelineShaderStageCreateInfo vertShaderStageInfo;
@@ -366,7 +365,7 @@ namespace Proto
             std::array<vk::DescriptorSetLayoutBinding, 5> texBindings;
             for (uint32_t b = 0; b < 5; ++b) {
                 texBindings[b] = vk::DescriptorSetLayoutBinding{
-                    .binding = b, //+ 1, // Bindings 1, 2, 3, 4, 5 matching your shader architecture parameters
+                    .binding = b, // Bindings 1, 2, 3, 4, 5 matching your shader architecture parameters
                     .descriptorType = vk::DescriptorType::eCombinedImageSampler,
                     .descriptorCount = 1,
                     .stageFlags = vk::ShaderStageFlagBits::eFragment
@@ -424,7 +423,7 @@ namespace Proto
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "Error creating PBR pipeline: " << e.what() << std::endl;
+            PROTO_CORE_ERROR("Error creating PBR pipeline: {}", e.what());
             return false;
         }
     }
@@ -700,7 +699,7 @@ namespace Proto
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "[DEFERRED ERROR]: Pipeline initialization skipped: " << e.what() << std::endl;
+            PROTO_CORE_ERROR("[DEFERRED ERROR]: Pipeline initialization skipped: {}", e.what());
             return false;
         }
     }
@@ -800,7 +799,7 @@ namespace Proto
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "[SHADOW ERROR]: Failed to create shadow pipeline: " << e.what() << std::endl;
+            PROTO_CORE_ERROR("[SHADOW ERROR]: Failed to create shadow pipeline: {}", e.what());
             return false;
         }
     }
@@ -859,10 +858,16 @@ namespace Proto
         for (int i = 0; i < 4; ++i) {
             if (shadowEnabled[i] == 0) continue;
 
-            float tileX = static_cast<float>((i % 2) * 2048);
-            float tileY = static_cast<float>((i / 2) * 2048);
-            cmd.setViewport(0, { vk::Viewport(tileX, tileY, 2048.0f, 2048.0f, 0.0f, 1.0f) });
-            cmd.setScissor(0, { vk::Rect2D({ static_cast<int32_t>(tileX), static_cast<int32_t>(tileY) },{ 2048, 2048 }) });
+#ifdef PROTO_PLATFORM_ANDROID
+            constexpr uint32_t SHADOW_MAP_SIZE = 1024;
+#else
+            constexpr uint32_t SHADOW_MAP_SIZE = 4096;
+#endif
+
+            float tileX = static_cast<float>((i % 2) * SHADOW_MAP_SIZE / 2);
+            float tileY = static_cast<float>((i / 2) * SHADOW_MAP_SIZE / 2);
+            cmd.setViewport(0, { vk::Viewport(tileX, tileY, static_cast<float>(SHADOW_MAP_SIZE / 2), static_cast<float>(SHADOW_MAP_SIZE / 2), 0.0f, 1.0f) });
+            cmd.setScissor(0, { vk::Rect2D({ static_cast<int32_t>(tileX), static_cast<int32_t>(tileY) },{ SHADOW_MAP_SIZE / 2, SHADOW_MAP_SIZE / 2 }) });
 
             std::function<void(Node*, const glm::mat4&)> drawShadowNode = [&](Node* node, const glm::mat4& parentMat) {
                 if (!node) return;
@@ -934,7 +939,7 @@ namespace Proto
             auto& device = lowLevelRenderer.GetLogicalDevice();
 
             // Uses a forward PBR/unlit glass shader that outputs directly to FinalColor (1 color attachment)
-            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/pbr_forward.spv");
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/PBR_Forward.spv");
             vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
 
             vk::PipelineShaderStageCreateInfo vertStage{
@@ -1027,7 +1032,7 @@ namespace Proto
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "[TRANSPARENT PIPELINE ERROR]: " << e.what() << std::endl;
+            PROTO_CORE_ERROR("[TRANSPARENT PIPELINE ERROR]: {}", e.what());
             return false;
         }
     }
@@ -1134,11 +1139,11 @@ namespace Proto
 
             m_BloomExtractPipeline = buildFullscreenPipeline("PSBrightExtract", vk::Format::eR16G16B16A16Sfloat);
             m_BloomBlurPipeline = buildFullscreenPipeline("PSBlur", vk::Format::eR16G16B16A16Sfloat);
-            m_BloomCompositePipeline = buildFullscreenPipeline("PSComposite", swapChainImageFormat);
+            m_BloomCompositePipeline = buildFullscreenPipeline("PSComposite", vk::Format::eB8G8R8A8Srgb);
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "[BLOOM ERROR]: " << e.what() << std::endl;
+            PROTO_CORE_ERROR("[BLOOM ERROR]: {}", e.what());
             return false;
         }
     }
@@ -1209,7 +1214,7 @@ namespace Proto
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "[SSAO ERROR]: " << e.what() << std::endl;
+            PROTO_CORE_ERROR("[SSAO ERROR]: {}", e.what());
             return false;
         }
     }
@@ -1351,7 +1356,7 @@ namespace Proto
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "[PARTICLE PIPELINE ERROR]: " << e.what() << std::endl;
+            PROTO_CORE_ERROR("[PARTICLE PIPELINE ERROR]: {}", e.what());
             return false;
         }
     }
@@ -1527,7 +1532,7 @@ namespace Proto
             return true;
         }
         catch (const std::exception& e) {
-            std::cerr << "[SSR ERROR]: " << e.what() << std::endl;
+            PROTO_CORE_ERROR("[SSR ERROR]: {}", e.what());
             return false;
         }
     }
@@ -1563,16 +1568,16 @@ namespace Proto
 
                 pushMaterialProperties(*cmd, model, node->materialIndex, globalMatrix, ownerEntity);
 
-                VkDescriptorSet set0 = !lowLevelRenderer.vulkanCommandBuffer->descriptorSets.empty() ?
-                    *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame] : VK_NULL_HANDLE;
-                VkDescriptorSet set1 = *material.descriptorSet;
+                vk::DescriptorSet set0 = !lowLevelRenderer.vulkanCommandBuffer->descriptorSets.empty()
+                    ? *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame]
+                    : vk::DescriptorSet{ nullptr };
+                vk::DescriptorSet set1 = *material.descriptorSet;
 
-                if (set0 != VK_NULL_HANDLE && set1 != VK_NULL_HANDLE) {
-                    VkDescriptorSet rawSets[] = { set0, set1 };
-                    vk::ArrayProxy<const vk::DescriptorSet> setsProxy(2, reinterpret_cast<const vk::DescriptorSet*>(rawSets));
-                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrPipelineLayout, 0, setsProxy, {});
+                if (set0 != nullptr && set1 != nullptr) {
+                    std::array<vk::DescriptorSet, 2> sets = { set0, set1 };
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrPipelineLayout, 0, { set0, set1 }, {});
                 }
-                else if (set0 != VK_NULL_HANDLE) {
+                else if (set0 != nullptr) {
                     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrPipelineLayout, 0, { vk::DescriptorSet(set0) }, {});
                 }
 
@@ -1810,7 +1815,7 @@ namespace Proto
         logicalDevice.updateDescriptorSets(writes, {});
 
         // 4. Bind descriptor sets and draw full screen composition triangle
-        VkDescriptorSet layoutsArray[] = { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame], *gBufferSet };
+        vk::DescriptorSet layoutsArray[] = { *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame], *gBufferSet };
         commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, sceneRenderer->GetDeferredPipelineLayout(), 0, vk::ArrayProxy<const vk::DescriptorSet>(2, reinterpret_cast<const vk::DescriptorSet*>(layoutsArray)), {});
 
         commandBuffer.draw(3, 1, 0, 0);
@@ -2166,6 +2171,11 @@ namespace Proto
     void Rendergraph::SetupDeferredRenderer(Rendergraph& graph, uint32_t width, uint32_t height)
     {
 
+#ifdef PROTO_PLATFORM_ANDROID
+        constexpr uint32_t SHADOW_MAP_SIZE = 1024;
+#else
+        constexpr uint32_t SHADOW_MAP_SIZE = 4096;
+#endif
         // Configure position buffer for world-space vertex positions
         // High precision format preserves positional accuracy for lighting calculations
         graph.AddResource("GBuffer_Position", vk::Format::eR16G16B16A16Sfloat, { width, height },
@@ -2190,7 +2200,7 @@ namespace Proto
             vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eInputAttachment | vk::ImageUsageFlagBits::eSampled,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal);
 
-        graph.AddResource("ShadowMap", vk::Format::eD32Sfloat, { 4096, 4096 },
+        graph.AddResource("ShadowMap", vk::Format::eD32Sfloat, { SHADOW_MAP_SIZE, SHADOW_MAP_SIZE },
             vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal);
 
@@ -2254,7 +2264,7 @@ namespace Proto
                     .setClearValue(vk::ClearDepthStencilValue(1.0f, 0));
 
                 vk::RenderingInfoKHR renderingInfo;
-                renderingInfo.setRenderArea({ { 0, 0 }, { 4096, 4096 } })
+                renderingInfo.setRenderArea({ { 0, 0 }, { SHADOW_MAP_SIZE, SHADOW_MAP_SIZE } })
                     .setLayerCount(1)
                     .setPDepthAttachment(&depthAttachment);
 
@@ -2846,14 +2856,15 @@ namespace Proto
                 {}, // Manage BloomPing/Pong transitions explicitly inside the pass (avoids double-transition VUID-01197)
                 [&graph, halfW, halfH](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
                 {
+                    auto& lowLevelRenderer = VulkanRenderer::Get();
+                    auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
+                    auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                    if (!*pbrRenderer.m_BloomExtractPipeline || !*pbrRenderer.m_BloomBlurPipeline) return;
+
                     auto* ssrRes = graph.GetResource("SSRColor");
                     auto* pingRes = graph.GetResource("BloomPing");
                     auto* pongRes = graph.GetResource("BloomPong");
                     if (!ssrRes || !pingRes || !pongRes) return;
-
-                    auto& lowLevelRenderer = VulkanRenderer::Get();
-                    auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
-                    auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
                     vk::Sampler sampler = lowLevelRenderer.imGui->GetSampler();
 
                     auto allocateSingleSet = [&](vk::raii::DescriptorSet& set, vk::ImageView view) {
@@ -2934,14 +2945,16 @@ namespace Proto
                 { "FinalColor" },
                 [&graph, width, height](vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
                 {
+                    auto& lowLevelRenderer = VulkanRenderer::Get();
+                    auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
+                    auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+                    if (!*pbrRenderer.m_BloomCompositePipeline) return;
+
                     auto* ssrRes = graph.GetResource("SSRColor");
                     auto* pingRes = graph.GetResource("BloomPing");
                     auto* finalRes = graph.GetResource("FinalColor");
                     if (!ssrRes || !pingRes || !finalRes) return;
 
-                    auto& lowLevelRenderer = VulkanRenderer::Get();
-                    auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
-                    auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
                     vk::Sampler sampler = lowLevelRenderer.imGui->GetSampler();
 
                     if (!*pbrRenderer.m_BloomCompositeSet) {

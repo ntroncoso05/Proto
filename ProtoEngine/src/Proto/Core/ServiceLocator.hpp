@@ -4,7 +4,8 @@
 #include <unordered_map>
 #include <typeindex>
 #include <stdexcept>
-//#include <assert.h>
+#include <assert.h>
+#include <cassert>
 
 namespace Proto {
 

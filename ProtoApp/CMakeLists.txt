@@ -5,14 +5,33 @@ file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp"
 )
 
-add_executable(${APPLICATION_NAME} ${APP_SOURCES})
+if(ANDROID)
+    find_package(game-activity REQUIRED CONFIG)
+    add_library(${APPLICATION_NAME} SHARED ${APP_SOURCES})
+    target_link_libraries(${APPLICATION_NAME} PRIVATE
+        ProtoEngine
+        -Wl,--whole-archive
+        game-activity::game-activity_static
+        -Wl,--no-whole-archive
+        android
+        log
+    )
+else()
+    add_executable(${APPLICATION_NAME} ${APP_SOURCES})
+    target_link_libraries(${APPLICATION_NAME} PRIVATE ProtoEngine)
+    if(MSVC)
+        set_target_properties(${APPLICATION_NAME} PROPERTIES
+            VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    endif()
+endif()
 
 target_include_directories(${APPLICATION_NAME} PRIVATE app)
-target_link_libraries(${APPLICATION_NAME} PRIVATE ProtoEngine)
 
 # Restored and unified preprocessor defines
 target_compile_definitions(${APPLICATION_NAME} PRIVATE
-    "PROTO_PLATFORM_WINDOWS" # <--- CRITICAL FIX: Activates the #ifdef macro layout block
+    "$<$<PLATFORM_ID:Windows>:PROTO_PLATFORM_WINDOWS>" # Activates the #ifdef macro layout block
+    "$<$<PLATFORM_ID:Android>:PROTO_PLATFORM_ANDROID>"
 )
 
 # Forces IDEs to treat the root project folder as the active sandbox working directory
@@ -22,8 +41,4 @@ if(MSVC)
         VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
     
-    # Tells the compiler to look into the ProtoEngine static library objects for main()
-    #target_link_options(${APPLICATION_NAME} PRIVATE "/INCLUDE:main")
 endif()
-
-#source_group(TREE "${CMAKE_SOURCE_DIR}/${APPLICATION_NAME}" FILES ${Proto_SOURCES})

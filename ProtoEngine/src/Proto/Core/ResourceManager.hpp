@@ -56,14 +56,8 @@ namespace Proto
         ResourceHandle(const std::string& id, ResourceManager* manager)
             : resourceId(id), resourceManager(manager) {}
 
-        T* Get() const {
-            if (!resourceManager) return nullptr;
-            return resourceManager->template GetResource<T>(resourceId);
-        }
-
-        bool IsValid() const {
-            return resourceManager && resourceManager->template HasResource<T>(resourceId);
-        }
+        T* Get() const;
+        bool IsValid() const;
 
         const std::string& GetId() const {
             return resourceId;
@@ -241,5 +235,14 @@ namespace Proto
     private:
             std::unordered_map<std::string, std::string> assetPaths;
     };
+    template<typename T>
+    T* ResourceHandle<T>::Get() const {
+        if (!resourceManager) return nullptr;
+        return resourceManager->template GetResource<T>(resourceId);
+    }
 
+    template<typename T>
+    bool ResourceHandle<T>::IsValid() const {
+        return resourceManager && resourceManager->template HasResource<T>(resourceId);
+    }
 }

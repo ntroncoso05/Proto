@@ -5,8 +5,12 @@
 #include "Core/ComponentTypes.hpp"
 #include "Core/ServiceLocator.hpp"
 #include "Core/Scene.hpp"
+#include "Core/AssetIO.hpp"
+#include "Core/Log.hpp"
 #include "Renderer/RendererPipeline.hpp"
-
+#ifdef PROTO_PLATFORM_ANDROID
+    #include "Platform/Android/AndroidWindow.hpp"
+#endif
 #include <nlohmann/json.hpp>
 #include <fstream>
 
@@ -165,19 +169,30 @@ namespace Proto
             s_ActiveScenePath = filepath;
         }
 
-        std::ofstream outFile(filepath);
-        if (!outFile.is_open()) return false;
+#ifdef PROTO_PLATFORM_ANDROID
+        std::string outPath = std::string(AndroidWindow::GetAndroidApp()->activity->internalDataPath)
+            + "/" + AssetIO::NormalizeAndroidAssetPath(filepath);
+        PROTO_CORE_INFO("AssetIO::NormalizeAndroidAssetPath({})", filepath);
+        std::filesystem::create_directories(std::filesystem::path(outPath).parent_path());
+#else
+        std::string outPath = filepath;
+#endif
 
+        std::ofstream outFile(outPath);
+        if (!outFile.is_open()) return false;
         outFile << root.dump(4);
         return true;
     }
 
     bool SceneSerializer::Deserialize(const std::string& filepath)
     {
-        std::ifstream inFile(filepath);
-        if (!inFile.is_open()) return false;
-        json root;
-        inFile >> root;
+        //json root;
+        //std::ifstream inFile(filepath);
+        //if (!inFile.is_open()) return false;
+        //inFile >> root;
+        std::string text = AssetIO::ReadTextFile(filepath);
+        if (text.empty()) return false;
+        json root = json::parse(text);
 
         if (filepath.find("_temp_play_state") == std::string::npos) {
             std::unordered_set<std::string> incomingNames;

@@ -1,7 +1,9 @@
 #pragma once
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
 #include <vulkan/vulkan_raii.hpp>
-#include <ktx.h>
+#ifndef PROTO_PLATFORM_ANDROID
+	#include <ktx.h>
+#endif
 
 namespace Proto
 {
@@ -19,8 +21,9 @@ namespace Proto
 		void TransitionImageLayout(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Image& image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, uint32_t levels);
 
 		std::pair<vk::raii::Image, vk::raii::DeviceMemory> CreateImage(uint32_t width, uint32_t height, uint32_t levels, vk::SampleCountFlagBits numSamples, vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties);
-
+#ifndef PROTO_PLATFORM_ANDROID
 		void CreateTextureImage(ktxTexture* kTexture, int width, int height, int channels);
+#endif
 		void CreateTextureImageView();
 		void CreateTextureSampler();
 		void CreateDepthResources();
@@ -28,7 +31,9 @@ namespace Proto
 
 		vk::Format FindDepthFormat();
 		vk::Format FindSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features);
+#ifndef PROTO_PLATFORM_ANDROID
 		void GenerateMipmaps(vk::raii::CommandBuffer& commandBuffer, vk::raii::Image& image, vk::Format format, int32_t width, int32_t height, uint32_t levels, ktxTexture* kTexture);
+#endif
 
 		uint32_t               mipLevels = 0;
 		vk::raii::Image        textureImage = nullptr;

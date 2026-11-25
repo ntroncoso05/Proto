@@ -1,13 +1,19 @@
-textmy_vulkan_engine/
-├── CMakeLists.txt             # Root configuration
-├── cmake/                     # Optional custom finder scripts
-├── engine/                    # Engine Framework Library
-│   ├── CMakeLists.txt
-│   ├── include/
-│   │   └── engine.hpp
-│   └── source/
-│       └── engine.cpp
-└── app/                       # Application Executable
-    ├── CMakeLists.txt
-    └── source/
-        └── main.cpp
+Proto/
+├── CMakeLists.txt               <-- Shared root CMake (used by both Visual Studio & Gradle!)
+├── ProtoEngine/		 # Engine Framework Library
+│   └── src/Platform/
+│       ├── Windows/             <-- Existing GLFW + Win32 implementation
+│       └── Android/             <-- New GameActivity + ANativeWindow implementation
+├── ProtoApp/                       # Application Executable
+│    ├── CMakeLists.txt
+│    └── src/
+│        └── Sandbox.cpp
+├── assets/                      <-- Bundled directly into the Android APK!
+└── android/
+    ├── build.gradle.kts
+    ├── settings.gradle.kts
+    └── app/
+        ├── build.gradle.kts
+        └── src/main/
+            ├── AndroidManifest.xml
+            └── java/com/proto/app/MainActivity.kt

@@ -4,8 +4,10 @@
 #include "Events/KeyEvent.hpp"
 #include "Events/MouseEvent.hpp"
 #include <imgui.h>
-#include <GLFW/glfw3.h>
-#include "Platform/Windows/WindowsPlatform.hpp"
+#ifndef PROTO_PLATFORM_ANDROID
+    #include <GLFW/glfw3.h>
+    #include "Platform/Windows/WindowsPlatform.hpp"
+#endif
 #include "Platform/Vulkan/VK_Renderer.hpp"
 
 // Internal enum bridge definition to fulfill input source requirements
@@ -15,6 +17,7 @@
 
 namespace Proto {
 
+#ifndef PROTO_PLATFORM_ANDROID
     // Helper translation map to safely bridge platform codes into ImGui space
     static ImGuiKey GLFWKeyToImGuiKey(int key)
     {
@@ -128,6 +131,7 @@ namespace Proto {
             default:                     return ImGuiKey_None;
         }
     };
+#endif
 
     ImGuiLayer::ImGuiLayer() : Layer("ImGui") {}
 
@@ -142,6 +146,7 @@ namespace Proto {
         auto* imGuiUtil = VulkanRenderer::Get().imGui;
         bool overSceneViewport = imGuiUtil && imGuiUtil->IsViewportHovered();
 
+#ifndef PROTO_PLATFORM_ANDROID
         // 1. Key Press: feed ImGui, only consume if typing in a text field
         dispatcher.Dispatch<KeyPressEvent>([&io](const KeyPressEvent& e) {
             ImGuiKey imguiKey = GLFWKeyToImGuiKey(e.GetKeyCode());
@@ -159,7 +164,7 @@ namespace Proto {
             }
             return false;
             });
-
+#endif
         // 3. Mouse Press: feed ImGui, only consume clicks outside the 3D Viewport
         dispatcher.Dispatch<MouseButtonPressedEvent>([&io, overSceneViewport](const MouseButtonPressedEvent& e) {
             io.AddMouseButtonEvent(e.GetMouseButton(), true);

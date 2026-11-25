@@ -13,7 +13,9 @@
 #include "Platform/Vulkan/VK_Pipeline.hpp"
 #include "Platform/Vulkan/VK_CommandBuffer.hpp"
 #include "Platform/Vulkan/VK_Image.hpp"
-#include "Platform/Windows/WindowsPlatform.hpp"
+#ifndef PROTO_PLATFORM_ANDROID
+	#include "Platform/Windows/WindowsPlatform.hpp"
+#endif
 
 #include "Core/ResourceTypes.hpp"
 #include "Core/ResourceManager.hpp"
@@ -75,7 +77,9 @@ namespace Proto
 		std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
 		std::vector<vk::raii::Fence>     inFlightFences;
 
+#ifndef PROTO_PLATFORM_ANDROID
 		std::unique_ptr< WindowsWindow>windows;
+#endif
 		std::unique_ptr<RenderPassManager> m_RenderPassManager;
 		std::unique_ptr<SceneRenderer> m_3DRenderer;
 		std::unique_ptr<Rendergraph> m_Rendergraph;

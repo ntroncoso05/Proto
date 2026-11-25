@@ -5,7 +5,7 @@
 
 #include "Renderer/Renderer.hpp"
 #include "Core/ImGuiLayer.hpp" // Ensure this is included
-#include <glfw/glfw3.h>
+#include <chrono>
 #include "Core/Log.hpp"
 #include "Core/Core.hpp"
 #include "Platform/Vulkan/VK_Renderer.hpp"
@@ -14,6 +14,10 @@
 #include "Core/ResourceManager.hpp"
 #include "Renderer/ImGuiPipeline.hpp"
 #include "Renderer/RendererPipeline.hpp"
+
+#ifdef PROTO_PLATFORM_ANDROID
+	#include "Platform/Android/AndroidWindow.hpp"
+#endif
 
 namespace Proto {
 
@@ -40,9 +44,6 @@ namespace Proto {
 		auto& apiContext = static_cast<VulkanRenderer&>(*RendererAPI::GetInstance());
 		ServiceLocator::Register<VulkanRenderer>(&apiContext);
 		ServiceLocator::Register<RendererAPI>(&apiContext);
-
-		//m_3DRenderer = std::make_unique<SceneRenderer>();
-		//ServiceLocator::Register<SceneRenderer>(m_3DRenderer.get());
 
 		// 2. Initialize and allocate your new high-level scene ImGuiPipeline pass manager
 		m_ImGuiPipeline = std::make_unique<ImGuiPipeline>();
@@ -81,11 +82,22 @@ namespace Proto {
 		
 	}
 
+	static float GetTime() {
+		static const auto start = std::chrono::steady_clock::now();
+		const auto now = std::chrono::steady_clock::now();
+		return std::chrono::duration<float>(now - start).count();
+	}
+
 	void Application::Run()
 	{
+		PROTO_CORE_INFO("Entering main loop");
+#ifdef PROTO_PLATFORM_ANDROID
+		while (m_Running && AndroidWindow::GetAndroidApp() && !AndroidWindow::GetAndroidApp()->destroyRequested)
+#else
 		while (m_Running)
+#endif
 		{
-			float time = (float)glfwGetTime();
+			float time = GetTime();
 			float frameTime = time - m_LastFrameTime;
 			m_LastFrameTime = time;
 			Timestep timestep = std::min(frameTime, 0.1f);
@@ -93,6 +105,7 @@ namespace Proto {
 			// This executes glfwPollEvents() cleanly, which systematically maps straight 
 			// to your layer stack cascade pipeline.
 			m_Window->OnUpdate();
+			if (!m_Running) break;
 			if (!m_Minimized)
 			{
 				// Updates layers (like ExampleLayer) which read keyboard state maps sequentially

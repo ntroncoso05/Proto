@@ -75,3 +75,36 @@ ipch/
 *.scc
 
 build/
+
+_temp_play_state.json
+
+# Android / Gradle / NDK Build Artifacts
+.gradle/
+**/build/
+android/.cxx/
+android/app/.cxx/
+android/.idea/
+android/local.properties
+android/captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Android Studio / IntelliJ user-specific files
+*.iml
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/gradle.xml
+.idea/assetWizardSettings.xml
+.idea/dictionaries
+.idea/libraries
+.idea/caches
+.idea/modules.xml
+.idea/navEditor.xml
+
+# Keystore / Signing secrets (keep debug.keystore or release keys private)
+*.jks
+*.keystore
+!debug.keystore

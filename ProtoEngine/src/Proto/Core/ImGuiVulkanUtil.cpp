@@ -17,22 +17,16 @@
 #include <format>
 #include <filesystem>
 #include <ImGuizmo.h>
-#include <GLFW/glfw3.h>
+#ifndef PROTO_PLATFORM_ANDROID
+    #include <GLFW/glfw3.h>
+#endif
+#include "Core/AssetIO.hpp"
 
 namespace Proto
 {
     std::vector<char> readFile(const std::string& filename)
     {
-        std::ifstream file(filename, std::ios::ate | std::ios::binary);
-        if (!file.is_open())
-        {
-            throw std::runtime_error("failed to open file!");
-        }
-        std::vector<char> buffer(file.tellg());
-        file.seekg(0, std::ios::beg);
-        file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        file.close();
-        return buffer;
+        return AssetIO::ReadBinaryFile(filename);
     }
 
     ImGuiVulkanUtil::ImGuiVulkanUtil(vk::raii::Device& device, vk::raii::PhysicalDevice& physicalDevice,
@@ -71,11 +65,15 @@ namespace Proto
         // Inform ImGui that we support the new texture update protocol (v1.92+)
         // This enables support for dynamic font textures and multiple texture atlases
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
-
+        io.Fonts->TexDesiredFormat = ImTextureFormat_RGBA32;
         // Set display size
+#ifdef PROTO_PLATFORM_ANDROID
         io.DisplaySize = ImVec2(width, height);
         io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
-
+#else
+        io.DisplaySize = ImVec2(width, height);
+        io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+#endif
         // Set up style
         vulkanStyle = ImGui::GetStyle();
         vulkanStyle.Colors[ImGuiCol_TitleBg] = ImVec4(1.0f, 0.0f, 0.0f, 0.6f);
@@ -86,6 +84,11 @@ namespace Proto
 
         // Apply default style
         setStyle(0);
+#ifdef PROTO_PLATFORM_ANDROID
+        ImGui::GetStyle().ScaleAllSizes(3.0f);
+        //ImGui::GetIO().Fonts->AddFontDefault();
+        ImGui::GetIO().FontGlobalScale = 2.8f;
+#endif
     }
 
     void ImGuiVulkanUtil::setStyle(uint32_t index) {
@@ -181,10 +184,11 @@ namespace Proto
         std::string filePath = std::format("assets/shaders/ImGui.spv");
 
         // 2. ABSOLUTE PATH FALLBACK: If running from a build folder, prepend the generated root mapping path string
+#ifndef PROTO_PLATFORM_ANDROID
         if (!std::filesystem::exists(filePath)) {
             filePath = std::string(ROOT_WORKSPACE_DIR) + filePath;
         }
-
+#endif
         auto& pipelineX = ServiceLocator::Get<VulkanPipeline>();
         vk::raii::ShaderModule shaderModule = pipelineX.createShaderModule(readFile(filePath));
         // 3. Define Vertex Input Attributes matching ImDrawVert
@@ -360,6 +364,12 @@ namespace Proto
         }
     }
 
+    static float GetTime() {
+        static const auto start = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        return std::chrono::duration<float>(now - start).count();
+    }
+
     bool ImGuiVulkanUtil::newFrame(vk::Extent2D swapChainExtent)
     {
         ImGuiIO& io = ImGui::GetIO();
@@ -369,11 +379,15 @@ namespace Proto
         float height = static_cast<float>(swapChainExtent.height);
 
         // Update display sizes dynamically every single frame pass
+#ifdef PROTO_PLATFORM_ANDROID
         io.DisplaySize = ImVec2(width, height);
-
+        io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+#else
+        io.DisplaySize = ImVec2(width, height);
+#endif
         // CRITICAL: Feed engine delta time updates directly into the ImGui state pipeline
         // Use the current frame time or calculate an absolute execution step
-        float currentTime = (float)glfwGetTime();
+        float currentTime = GetTime();
         static float lastTime = 0.0f;
         io.DeltaTime = (lastTime > 0.0f) ? (currentTime - lastTime) : (1.0f / 60.0f);
         lastTime = currentTime;
@@ -519,6 +533,7 @@ namespace Proto
 
     void ImGuiVulkanUtil::drawGUI()
     {
+#ifndef PROTO_PLATFORM_ANDROID
         auto* win = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
         static bool hKeyWasDown = false;
         bool hKeyDown = (win && glfwGetKey(win, GLFW_KEY_H) == GLFW_PRESS);
@@ -534,7 +549,6 @@ namespace Proto
             VulkanRenderer::Get().RequestScreenshot();
         }
         f11WasDown = f11Down;
-
         // ENABLE FULL-WINDOW TRANSPARENT DOCKSPACE
         if (ImGui::BeginMainMenuBar())
         {
@@ -657,12 +671,14 @@ namespace Proto
         // --- ImGuizmo Overlay ---
         static ImGuizmo::OPERATION currentGizmoOp = ImGuizmo::TRANSLATE;
 
+#ifndef PROTO_PLATFORM_ANDROID
         //auto* win = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
         if (win && glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) != GLFW_PRESS) {
             if (glfwGetKey(win, GLFW_KEY_T) == GLFW_PRESS) currentGizmoOp = ImGuizmo::TRANSLATE;
             if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS) currentGizmoOp = ImGuizmo::ROTATE;
             if (glfwGetKey(win, GLFW_KEY_Y) == GLFW_PRESS) currentGizmoOp = ImGuizmo::SCALE;
         }
+#endif
 
         CameraComponent* activeCam = nullptr;
         for (auto* entity : Entity::GetActiveSceneEntities()) {
@@ -672,8 +688,12 @@ namespace Proto
             }
         }
 
-        bool altPressed = (glfwGetKey(win, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
-            glfwGetKey(win, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS);
+#ifndef PROTO_PLATFORM_ANDROID
+        bool altPressed = (win && (glfwGetKey(win, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
+            glfwGetKey(win, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS));
+#else
+        bool altPressed = false;
+#endif
         if (selectedEntity && selectedEntity->GetName() != "MainCamera" && !altPressed) {
             if (showViewportOverlays) {
                 auto* targetTransform = selectedEntity->GetComponent<TransformComponent>();
@@ -1611,8 +1631,154 @@ namespace Proto
                 }
             }
         }
-
         ImGui::End();
+#else
+        ImGuiIO& io = ImGui::GetIO();
+        this->viewportSize = { io.DisplaySize.x, io.DisplaySize.y };
+        this->viewportMin = { 0.0f, 0.0f };
+
+        // Full-screen borderless background window displaying FinalColor
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::Begin("##MobileViewport", nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs);
+
+        isViewportHovered = !ImGui::IsAnyItemHovered() && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow);
+
+        if (*sceneViewportDescriptorSet) {
+            ImGui::Image((ImTextureID)(intptr_t)(VkDescriptorSet)*sceneViewportDescriptorSet, io.DisplaySize);
+        }
+
+        // Draw 3D ImGuizmo on the selected entity on Android too!
+        CameraComponent* activeCam = nullptr;
+        for (auto* entity : Entity::GetActiveSceneEntities()) {
+            if (auto* cam = entity->GetComponent<CameraComponent>()) {
+                activeCam = cam;
+                break;
+            }
+        }
+        static ImGuizmo::OPERATION currentGizmoOp = ImGuizmo::TRANSLATE;
+        if (selectedEntity && selectedEntity->GetName() != "MainCamera" && selectedEntity->GetName() != "GroundPlane" && activeCam) {
+            if (auto* targetTransform = selectedEntity->GetComponent<TransformComponent>()) {
+                ImGuizmo::SetOrthographic(false);
+                ImGuizmo::SetDrawlist();
+                ImGuizmo::SetRect(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y);
+
+                glm::mat4 viewMatrix = activeCam->GetViewMatrix();
+                glm::mat4 projMatrix = activeCam->GetProjectionMatrix();
+                projMatrix[1][1] *= -1.0f;
+                glm::mat4 modelMatrix = targetTransform->GetWorldTransformMatrix();
+
+                ImGuizmo::Manipulate(
+                    glm::value_ptr(viewMatrix),
+                    glm::value_ptr(projMatrix),
+                    currentGizmoOp,
+                    ImGuizmo::WORLD,
+                    glm::value_ptr(modelMatrix)
+                );
+
+                if (ImGuizmo::IsUsing()) {
+                    glm::vec3 translation, rotationEuler, scale;
+                    ImGuizmo::DecomposeMatrixToComponents(
+                        glm::value_ptr(modelMatrix),
+                        glm::value_ptr(translation),
+                        glm::value_ptr(rotationEuler),
+                        glm::value_ptr(scale)
+                    );
+                    if (Entity* parent = selectedEntity->GetParent()) {
+                        if (auto* parentTrans = parent->GetComponent<TransformComponent>()) {
+                            glm::mat4 localMat = glm::inverse(parentTrans->GetWorldTransformMatrix()) * modelMatrix;
+                            ImGuizmo::DecomposeMatrixToComponents(
+                                glm::value_ptr(localMat),
+                                glm::value_ptr(translation),
+                                glm::value_ptr(rotationEuler),
+                                glm::value_ptr(scale)
+                            );
+                        }
+                    }
+                    targetTransform->SetPosition(translation);
+                    targetTransform->SetRotation(glm::quat(glm::radians(rotationEuler)));
+                    targetTransform->SetScale(scale);
+                }
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+
+        // Compact floating mobile overlay bar at top-left
+        static bool showMobileHierarchy = false;
+        static bool showMobileInspector = false;
+        static bool showMobilePostFX = false;
+
+        // Compact floating mobile overlay bar at top-left
+        ImGui::SetNextWindowSize(ImVec2(0, 0));
+        ImGui::SetNextWindowPos(ImVec2(24.0f, 110.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.75f);
+
+        ImGui::Begin("##MobileControls", nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+
+        ImGui::Text("ProtoEngine | %.0f FPS", io.Framerate);
+        ImGui::SameLine();
+        if (ImGui::Button("Scene"))     showMobileHierarchy = !showMobileHierarchy;
+        ImGui::SameLine();
+        if (ImGui::Button("Inspector")) showMobileInspector = !showMobileInspector;
+        ImGui::SameLine();
+        if (ImGui::Button("Post-FX"))   showMobilePostFX = !showMobilePostFX;
+        ImGui::End();
+
+        if (showMobileHierarchy) {
+            ImGui::SetNextWindowPos(ImVec2(24.0f, 120.0f), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(420.0f, 600.0f), ImGuiCond_FirstUseEver);
+            ImGui::Begin("Scene Hierarchy", &showMobileHierarchy);
+            for (Entity* entity : Entity::GetActiveSceneEntities()) {
+                if (!entity) continue;
+                bool isSel = (selectedEntity == entity);
+                if (ImGui::Selectable(entity->GetName().c_str(), isSel)) {
+                    selectedEntity = entity;
+                }
+            }
+            ImGui::End();
+        }
+
+        if (showMobileInspector) {
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 480.0f, 210.0f), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(450.0f, 700.0f), ImGuiCond_FirstUseEver);
+            ImGui::Begin("Inspector", &showMobileInspector);
+            if (selectedEntity) {
+                ImGui::Text("Entity: %s", selectedEntity->GetName().c_str());
+                ImGui::Separator();
+                if (auto* t = selectedEntity->GetComponent<TransformComponent>()) {
+                    glm::vec3 pos = t->GetPosition();
+                    if (ImGui::DragFloat3("Position", glm::value_ptr(pos), 0.1f)) t->SetPosition(pos);
+                    glm::vec3 scale = t->GetScale();
+                    if (ImGui::DragFloat3("Scale", glm::value_ptr(scale), 0.05f, 0.01f, 100.0f)) t->SetScale(scale);
+                }
+            }
+            else {
+                ImGui::TextDisabled("Tap 'Scene' to select an entity.");
+            }
+            ImGui::End();
+        }
+
+        if (showMobilePostFX) {
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 480.0f, 210.0f), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(450.0f, 650.0f), ImGuiCond_FirstUseEver);
+            ImGui::Begin("Post-Processing", &showMobilePostFX);
+            auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+            ImGui::SliderFloat("IBL Ambient", &pbrRenderer.m_IBLIntensity, 0.0f, 1.5f);
+            ImGui::SliderFloat("Bloom", &pbrRenderer.m_BloomIntensity, 0.0f, 2.0f);
+            ImGui::SliderFloat("SSR", &pbrRenderer.m_SSRIntensity, 0.0f, 2.0f);
+            ImGui::SliderFloat("Fog Density", &pbrRenderer.m_FogDensity, 0.0f, 0.12f, "%.4f");
+            ImGui::End();
+        }
+#endif
         ImGui::Render();
     }
 
