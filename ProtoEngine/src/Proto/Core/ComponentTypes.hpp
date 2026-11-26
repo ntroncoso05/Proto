@@ -229,8 +229,12 @@ namespace Proto
         // first access after the projection parameters change.
         mutable glm::mat4 projectionMatrix = glm::mat4(1.0f);
         mutable bool projectionDirty = true;
-
     public:
+        enum class ProjectionMode { Perspective = 0, Orthographic = 1 };
+
+        ProjectionMode projectionMode = ProjectionMode::Perspective;
+        float orthoSize = 8.0f; // Half-height in world units (meters)
+
         void SetPerspective(float fov, float aspect, float NearClip, float FarClip);
         void SetAspectRatio(float aspect) { aspectRatio = aspect; projectionDirty = true; }
         void SetFOV(float fov) { FOV = fov; projectionDirty = true; }
@@ -249,6 +253,11 @@ namespace Proto
         float MouseSensitivity = 0.1f;
 
         Frustum GetFrustum() const { Frustum f; f.update(GetProjectionMatrix() * GetViewMatrix()); return f; }
+
+        void SetProjectionMode(ProjectionMode mode) { projectionMode = mode; projectionDirty = true; }
+        ProjectionMode GetProjectionMode() const { return projectionMode; }
+        void SetOrthoSize(float size) { orthoSize = std::max(size, 0.05f); projectionDirty = true; }
+        float GetOrthoSize() const { return orthoSize; }
     };
 
     class ModelComponent : public Component {

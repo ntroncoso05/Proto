@@ -76,7 +76,7 @@ ipch/
 
 build/
 
-_temp_play_state.json
+assets/scenes/_temp_play_state.json
 
 # Android / Gradle / NDK Build Artifacts
 .gradle/

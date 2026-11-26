@@ -11,7 +11,9 @@
 #include "Platform/Vulkan/VK_Pipeline.hpp"
 #include "Platform/Vulkan/VK_BufferUtils.hpp"
 #include "Renderer/RendererPipeline.hpp"
+#include "Renderer/EditorCameraController.hpp"
 #include "ShaderConfig.hpp"
+
 #include <glm/gtc/type_ptr.hpp>
 #include <fstream>
 #include <format>
@@ -656,6 +658,44 @@ namespace Proto
 
         ImVec2 viewportSize = ImGui::GetContentRegionAvail();
         this->viewportSize = { viewportSize.x, viewportSize.y };
+
+        // Compact CAD Viewport Toolbar
+        auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+        auto& activeScene = ServiceLocator::Get<Scene>();
+        //if (m_CameraController) { /* optional pointer if stored, or dispatch via callback/member */ }
+
+        ImGui::Checkbox("Grid", &pbrRenderer.m_ShowGrid);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110.0f);
+        const char* unitNames[] = { "mm", "cm", "m (Meters)", "in (Inches)", "ft (Feet)" };
+        int currentUnit = static_cast<int>(pbrRenderer.m_GridUnit);
+        if (ImGui::Combo("##GridUnit", &currentUnit, unitNames, IM_ARRAYSIZE(unitNames))) {
+            pbrRenderer.m_GridUnit = static_cast<SceneRenderer::GridUnit>(currentUnit);
+        }
+        ImGui::SameLine();
+        ImGui::Checkbox("Snap", &pbrRenderer.m_SnapToGrid);
+
+        // 1. Toolbar buttons right next to Snap
+        //auto& activeScene = ServiceLocator::Get<Scene>();
+        auto* camCtrl = ServiceLocator::Contains<EditorCameraController>()
+            ? &ServiceLocator::Get<EditorCameraController>()
+            : nullptr;
+
+        if (camCtrl) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Top"))   camCtrl->ApplyPreset(CameraPreset::Top, activeScene, true);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Front")) camCtrl->ApplyPreset(CameraPreset::Front, activeScene, true);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Right")) camCtrl->ApplyPreset(CameraPreset::Right, activeScene, true);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Iso"))   camCtrl->ApplyPreset(CameraPreset::Isometric, activeScene, true);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Ortho/Persp")) camCtrl->ToggleProjectionMode(activeScene);
+        }
+
         if (*sceneViewportDescriptorSet && viewportSize.x > 0.0f && viewportSize.y > 0.0f) {
             ImGui::Image(
                 (ImTextureID)(intptr_t)(VkDescriptorSet)*sceneViewportDescriptorSet,
@@ -698,7 +738,7 @@ namespace Proto
             if (showViewportOverlays) {
                 auto* targetTransform = selectedEntity->GetComponent<TransformComponent>();
                 if (targetTransform && activeCam) {
-                    ImGuizmo::SetOrthographic(false);
+                    ImGuizmo::SetOrthographic(activeCam->GetProjectionMode() == CameraComponent::ProjectionMode::Orthographic);
                     ImGuizmo::SetDrawlist();
                     ImGuizmo::SetRect(viewportMin.x, viewportMin.y, viewportSize.x, viewportSize.y);
 
@@ -707,12 +747,30 @@ namespace Proto
                     projMatrix[1][1] *= -1.0f; // Match Vulkan Y-flipped NDC space!
                     glm::mat4 modelMatrix = targetTransform->GetWorldTransformMatrix();
 
+                    float snapValues[3] = { 0.0f, 0.0f, 0.0f };
+                    const float* snapPtr = nullptr;
+                    if (pbrRenderer.m_SnapToGrid) {
+                        if (currentGizmoOp == ImGuizmo::ROTATE) {
+                            snapValues[0] = 15.0f;
+                        }
+                        else if (currentGizmoOp == ImGuizmo::SCALE) {
+                            snapValues[0] = snapValues[1] = snapValues[2] = 0.25f;
+                        }
+                        else {
+                            float unitMeters = pbrRenderer.GetGridUnitScaleMeters();
+                            snapValues[0] = snapValues[1] = snapValues[2] = unitMeters;
+                        }
+                        snapPtr = snapValues;
+                    }
+
                     ImGuizmo::Manipulate(
                         glm::value_ptr(viewMatrix),
                         glm::value_ptr(projMatrix),
                         currentGizmoOp,
                         ImGuizmo::WORLD,
-                        glm::value_ptr(modelMatrix)
+                        glm::value_ptr(modelMatrix),
+                        nullptr,
+                        snapPtr
                     );
 
                     if (ImGuizmo::IsUsing()) {
@@ -724,7 +782,6 @@ namespace Proto
                             glm::value_ptr(scale)
                         );
 
-                        // If entity has a parent (like Moon_Child), convert world matrix back to local space
                         if (Entity* parent = selectedEntity->GetParent()) {
                             if (auto* parentTrans = parent->GetComponent<TransformComponent>()) {
                                 glm::mat4 localMat = glm::inverse(parentTrans->GetWorldTransformMatrix()) * modelMatrix;
@@ -740,6 +797,41 @@ namespace Proto
                         targetTransform->SetPosition(translation);
                         targetTransform->SetRotation(glm::quat(glm::radians(rotationEuler)));
                         targetTransform->SetScale(scale);
+                    }
+                }
+            }
+        }
+
+        // 3D Orientation ViewCube in top-right of Viewport (always active when overlays are on)
+        if (activeCam && showViewportOverlays && viewportSize.x > 0.0f && viewportSize.y > 0.0f) {
+            if (auto* camEntity = activeCam->GetOwner()) {
+                if (auto* camTrans = camEntity->GetComponent<TransformComponent>()) {
+                    ImGuizmo::SetDrawlist();
+                    ImGuizmo::SetRect(viewportMin.x, viewportMin.y, viewportSize.x, viewportSize.y);
+
+                    glm::mat4 viewMat = activeCam->GetViewMatrix();
+                    float viewManipulateSize = 110.0f;
+                    ImVec2 viewManipPos(
+                        viewportMin.x + viewportSize.x - viewManipulateSize - 12.0f,
+                        viewportMin.y + 42.0f
+                    );
+                    float pivotDist = camCtrl ? camCtrl->GetOrbitDistance() : 8.0f;
+
+                    ImGuizmo::ViewManipulate(
+                        glm::value_ptr(viewMat),
+                        pivotDist,
+                        viewManipPos,
+                        ImVec2(viewManipulateSize, viewManipulateSize),
+                        0x10101040
+                    );
+
+                    glm::mat4 invView = glm::inverse(viewMat);
+                    glm::vec3 newPos = glm::vec3(invView[3]);
+                    glm::quat newRot = glm::quat_cast(glm::mat3(invView));
+                    if (glm::distance(newPos, camTrans->GetPosition()) > 1e-4f ||
+                        glm::abs(glm::dot(newRot, camTrans->GetRotation())) < 0.9999f) {
+                        camTrans->SetPosition(newPos);
+                        camTrans->SetRotation(glm::normalize(newRot));
                     }
                 }
             }
@@ -1483,7 +1575,7 @@ namespace Proto
 
         // Always visible regardless of entity selection
         ImGui::Separator();
-        auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
+        //auto& pbrRenderer = ServiceLocator::Get<SceneRenderer>();
         if (ImGui::CollapsingHeader("Post-Processing", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::SliderFloat("IBL Ambient", &pbrRenderer.m_IBLIntensity, 0.0f, 1.5f);
             ImGui::SliderFloat("Emissive Strength", &pbrRenderer.m_EmissiveStrength, 0.0f, 15.0f);

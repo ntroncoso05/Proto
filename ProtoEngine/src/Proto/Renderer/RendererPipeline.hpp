@@ -516,7 +516,47 @@ namespace Proto
         vk::raii::Pipeline            m_FogPipeline{ nullptr };
         vk::raii::DescriptorSet       m_FogSet{ nullptr };
 
-        bool CreateFogPipeline();
+        enum class GridUnit : int {
+            Millimeters = 0, // 0.001 m, 10 subdiv (1 cm major)
+            Centimeters = 1, // 0.01 m,  10 subdiv (10 cm major)
+            Meters = 2, // 1.0 m,   10 subdiv (10 m major)
+            Inches = 3, // 0.0254 m, 12 subdiv (1 ft major)
+            Feet = 4  // 0.3048 m, 10 subdiv (10 ft major)
+        };
+
+        struct GridPushConstants {
+            glm::mat4 invViewProj{ 1.0f };
+            glm::mat4 viewProj{ 1.0f };
+            glm::vec4 camPosAndPlaneY{ 0.0f, 3.0f, 10.0f, -1.0f }; // w = -1.0f aligns with GroundPlane!
+            glm::vec4 unitParams{ 1.0f, 10.0f, 80.0f, 0.75f };
+            glm::vec4 minorColor{ 0.55f, 0.58f, 0.62f, 0.30f };
+            glm::vec4 majorColor{ 0.80f, 0.84f, 0.90f, 0.60f };
+        };
+
+        bool     m_ShowGrid = true;
+        GridUnit m_GridUnit = GridUnit::Meters;
+        float    m_GridPlaneY = -0.99f; // Slightly above GroundPlane (-1.0f) to prevent z-fighting
+        float    m_GridFadeDistance = 80.0f;
+        float    m_GridOpacity = 0.85f;
+        bool     m_SnapToGrid = false;
+
+        float GetGridUnitScaleMeters() const {
+            switch (m_GridUnit) {
+            case GridUnit::Millimeters: return 0.001f;
+            case GridUnit::Centimeters: return 0.01f;
+            case GridUnit::Meters:      return 1.0f;
+            case GridUnit::Inches:      return 0.0254f;
+            case GridUnit::Feet:        return 0.3048f;
+            }
+            return 1.0f;
+        }
+
+        float GetGridSubdivisions() const {
+            return (m_GridUnit == GridUnit::Inches) ? 12.0f : 10.0f;
+        }
+
+        vk::raii::PipelineLayout m_GridPipelineLayout{ nullptr };
+        vk::raii::Pipeline       m_GridPipeline{ nullptr };
     public:
         SceneRenderer() = default;
         SceneRenderer(vk::raii::Device& dev, vk::Queue queue);
@@ -568,6 +608,11 @@ namespace Proto
         void SetEnvironmentHDRI(const std::string& path);
 
         bool CreateSSRPipeline();
+
+        bool CreateFogPipeline();
+
+        bool CreateGridPipeline();
+        void RenderGridPass(vk::raii::CommandBuffer& cmd);
     private:
         void SetupRenderPasses();
         // Internal format utility fallback lookup

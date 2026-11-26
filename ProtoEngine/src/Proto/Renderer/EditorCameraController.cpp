@@ -143,6 +143,84 @@ namespace Proto {
         dispatcher.Dispatch<MouseScrolledEvent>([&](const MouseScrolledEvent& ev) { return OnMouseScrolled(ev, scene); });
     }
 
+    void EditorCameraController::ApplyPreset(CameraPreset preset, Scene& scene, bool useOrthographic)
+    {
+        Entity* cameraEntity = FindActiveCameraEntity(scene);
+        auto imGuiUtil = VulkanRenderer::Get().imGui;
+        if (!cameraEntity || !imGuiUtil) return;
+
+        auto* transform = cameraEntity->GetComponent<TransformComponent>();
+        auto* camComp = cameraEntity->GetComponent<CameraComponent>();
+        if (!transform || !camComp) return;
+
+        // Focus around currently selected entity (or current orbit pivot)
+        Entity* selected = imGuiUtil->GetSelectedEntity();
+        if (selected && selected != cameraEntity) {
+            float radius = 2.0f;
+            ComputeEntityFocusBounds(selected, m_OrbitPivot, radius);
+            float halfFov = glm::radians(camComp->GetFOV() * 0.5f);
+            m_OrbitDistance = std::clamp((radius / std::max(std::sin(halfFov), 0.15f)) * 1.25f, 2.0f, 60.0f);
+        }
+
+        glm::vec3 viewDir(0.0f, 0.0f, -1.0f);
+        glm::vec3 upVec(0.0f, 1.0f, 0.0f);
+
+        switch (preset) {
+            case CameraPreset::Top:
+                viewDir = glm::vec3(0.0f, -1.0f, 0.0f);
+                upVec = glm::vec3(0.0f, 0.0f, -1.0f);
+                break;
+            case CameraPreset::Bottom:
+                viewDir = glm::vec3(0.0f, 1.0f, 0.0f);
+                upVec = glm::vec3(0.0f, 0.0f, 1.0f);
+                break;
+            case CameraPreset::Front:
+                viewDir = glm::vec3(0.0f, 0.0f, -1.0f);
+                break;
+            case CameraPreset::Back:
+                viewDir = glm::vec3(0.0f, 0.0f, 1.0f);
+                break;
+            case CameraPreset::Right:
+                viewDir = glm::vec3(-1.0f, 0.0f, 0.0f);
+                break;
+            case CameraPreset::Left:
+                viewDir = glm::vec3(1.0f, 0.0f, 0.0f);
+                break;
+            case CameraPreset::Isometric:
+                viewDir = glm::normalize(glm::vec3(-1.0f, -0.8165f, -1.0f));
+                break;
+            case CameraPreset::PerspectiveFree:
+            default:
+                viewDir = glm::normalize(glm::vec3(0.0f, -0.35f, -1.0f));
+                useOrthographic = false;
+                break;
+        }
+
+        m_FrameTargetPos = m_OrbitPivot - viewDir * m_OrbitDistance;
+        m_FrameTargetRot = glm::quatLookAt(viewDir, upVec);
+        m_IsFraming = true;
+
+        camComp->SetProjectionMode(useOrthographic ? CameraComponent::ProjectionMode::Orthographic
+            : CameraComponent::ProjectionMode::Perspective);
+        if (useOrthographic) {
+            camComp->SetOrthoSize(m_OrbitDistance * std::tan(glm::radians(camComp->GetFOV() * 0.5f)));
+        }
+    }
+
+    void EditorCameraController::ToggleProjectionMode(Scene& scene)
+    {
+        Entity* cameraEntity = FindActiveCameraEntity(scene);
+        if (!cameraEntity) return;
+        if (auto* camComp = cameraEntity->GetComponent<CameraComponent>()) {
+            bool toOrtho = (camComp->GetProjectionMode() == CameraComponent::ProjectionMode::Perspective);
+            camComp->SetProjectionMode(toOrtho ? CameraComponent::ProjectionMode::Orthographic
+                : CameraComponent::ProjectionMode::Perspective);
+            if (toOrtho) {
+                camComp->SetOrthoSize(m_OrbitDistance * std::tan(glm::radians(camComp->GetFOV() * 0.5f)));
+            }
+        }
+    }
+
     bool EditorCameraController::OnKeyPressed(const KeyPressEvent& e, Scene& scene)
     {
         if (e.IsRepeat() || ImGui::GetIO().WantTextInput) return false;
@@ -222,6 +300,7 @@ namespace Proto {
         if (e.GetMouseButton() == Mouse::ButtonRight)  m_IsRightDragging = false;
         return false;
     }
+
     bool EditorCameraController::OnMouseMoved(const MouseMovedEvent& e, Scene& scene)
     {
         glm::vec2 currPos(e.GetX(), e.GetY());
@@ -274,12 +353,20 @@ namespace Proto {
         if (!IsCursorInViewport(Input::GetMousePosition())) return false;
         Entity* cameraEntity = FindActiveCameraEntity(scene);
         auto imGuiUtil = VulkanRenderer::Get().imGui;
+
         if (!cameraEntity || !imGuiUtil) return false;
+
         if (auto* camComp = cameraEntity->GetComponent<CameraComponent>()) {
-            camComp->SetFOV(std::clamp(camComp->GetFOV() - e.GetYOffset() * 2.0f, 1.0f, 90.0f));
-            glm::vec2 vpSize = imGuiUtil->GetViewportSize();
-            if (vpSize.x > 0.0f && vpSize.y > 0.0f) {
-                camComp->SetPerspective(camComp->GetFOV(), vpSize.x / vpSize.y, 0.1f, 100.0f);
+            if (camComp->GetProjectionMode() == CameraComponent::ProjectionMode::Orthographic) {
+                float zoomFactor = std::clamp(1.0f - e.GetYOffset() * 0.12f, 0.5f, 1.5f);
+                camComp->SetOrthoSize(camComp->GetOrthoSize() * zoomFactor);
+            }
+            else {
+                camComp->SetFOV(std::clamp(camComp->GetFOV() - e.GetYOffset() * 2.0f, 1.0f, 90.0f));
+                glm::vec2 vpSize = imGuiUtil->GetViewportSize();
+                if (vpSize.x > 0.0f && vpSize.y > 0.0f) {
+                    camComp->SetPerspective(camComp->GetFOV(), vpSize.x / vpSize.y, 0.1f, 100.0f);
+                }
             }
             return true;
         }

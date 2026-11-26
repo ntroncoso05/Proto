@@ -60,7 +60,6 @@ namespace Proto
     }
 
     // MESH
-
     void MeshComponent::Render()
     {
         // LIFETIME GUARD: Verify the asset is valid and resident before drawing []
@@ -163,13 +162,14 @@ namespace Proto
     glm::mat4 CameraComponent::GetProjectionMatrix() const
     {
         if (projectionDirty) {
-            projectionMatrix = glm::perspective(
-                glm::radians(FOV),
-                aspectRatio,
-                nearPlane,
-                farPlane
-            );
-            projectionMatrix[1][1] *= -1.0f; // Single Vulkan NDC Y-flip for the entire engine
+            if (projectionMode == ProjectionMode::Orthographic) {
+                float halfW = orthoSize * aspectRatio;
+                projectionMatrix = glm::orthoRH_ZO(-halfW, halfW, -orthoSize, orthoSize, -farPlane, farPlane);
+            }
+            else {
+                projectionMatrix = glm::perspective(glm::radians(FOV), aspectRatio, nearPlane, farPlane);
+            }
+            projectionMatrix[1][1] *= -1.0f; // Single Vulkan NDC Y-flip
             projectionDirty = false;
         }
         return projectionMatrix;

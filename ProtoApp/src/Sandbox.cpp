@@ -99,7 +99,8 @@ public:
 			glm::vec2 vp = imGuiUtil->GetViewportSize();
 			if (vp.x > 0.0f && vp.y > 0.0f) {
 				if (auto* cam = cameraEntity->GetComponent<Proto::CameraComponent>()) {
-					cam->SetPerspective(cam->GetFOV(), vp.x / vp.y, 0.1f, 100.0f);
+					//cam->SetPerspective(cam->GetFOV(), vp.x / vp.y, 0.1f, 100.0f);
+					cam->SetAspectRatio(vp.x / vp.y);
 				}
 			}
 		}
@@ -248,6 +249,8 @@ public:
 		// FORCE THE GPU TO GO IDLE BEFORE LOADING ANY TEXTURES!. This clears the 'image has not been acquired' race conditions and lets EndSingleTimeCommands upload textures successfully!
 		auto& lowLevelRenderer = Proto::VulkanRenderer::Get();
 		lowLevelRenderer.vulkanContext->GetDevice().logicalDevice.waitIdle();
+
+		Proto::ServiceLocator::Register<Proto::EditorCameraController>(&m_CameraController);
 
 		auto& resourceManager = Proto::ServiceLocator::Get<Proto::ResourceManager>();
 		std::cout << "[ENGINE]: Device synchronized safely. Launching asset texture loading stream..." << std::endl;

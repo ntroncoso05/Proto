@@ -12,11 +12,26 @@ namespace Proto {
     class Scene;
     class Entity;
 
+    enum class CameraPreset {
+        PerspectiveFree = 0,
+        Top,
+        Bottom,
+        Front,
+        Back,
+        Right,
+        Left,
+        Isometric
+    };
+
     class EditorCameraController {
     public:
         void OnUpdate(Timestep ts, Scene& scene);
         void OnEvent(Event& e, Scene& scene);
 
+        void ApplyPreset(CameraPreset preset, Scene& scene, bool useOrthographic = true);
+        void ToggleProjectionMode(Scene& scene);
+
+        float GetOrbitDistance() const { return m_OrbitDistance; }
     private:
         bool OnKeyPressed(const KeyPressEvent& e, Scene& scene);
         bool OnMouseButtonPressed(const MouseButtonPressedEvent& e, Scene& scene);

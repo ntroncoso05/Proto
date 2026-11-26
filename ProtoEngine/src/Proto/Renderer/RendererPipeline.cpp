@@ -99,6 +99,109 @@ namespace Proto
         }
     }
 
+    bool SceneRenderer::CreateGridPipeline()
+    {
+        try {
+            auto& lowLevelRenderer = VulkanRenderer::Get();
+            auto& device = lowLevelRenderer.GetLogicalDevice();
+
+            auto shaderCode = lowLevelRenderer.vulkanPipeline->readFile("../../../assets/shaders/InfiniteGrid.spv");
+            vk::raii::ShaderModule shaderModule = lowLevelRenderer.vulkanPipeline->createShaderModule(shaderCode);
+
+            vk::PushConstantRange pushRange{
+                .stageFlags = vk::ShaderStageFlagBits::eFragment,
+                .offset = 0,
+                .size = sizeof(GridPushConstants)
+            };
+
+            m_GridPipelineLayout = device.createPipelineLayout({
+                .setLayoutCount = 0,
+                .pSetLayouts = nullptr,
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &pushRange
+                });
+
+            std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+                vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eVertex,   .module = *shaderModule, .pName = "VSMain" },
+                vk::PipelineShaderStageCreateInfo{ .stage = vk::ShaderStageFlagBits::eFragment, .module = *shaderModule, .pName = "PSMain" }
+            };
+
+            vk::PipelineVertexInputStateCreateInfo vertexInput;
+            vk::PipelineInputAssemblyStateCreateInfo inputAssembly{ .topology = vk::PrimitiveTopology::eTriangleList };
+            vk::PipelineViewportStateCreateInfo viewportState{ .viewportCount = 1, .scissorCount = 1 };
+            std::array<vk::DynamicState, 2> dynStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+            vk::PipelineDynamicStateCreateInfo dynamicState{ .dynamicStateCount = 2, .pDynamicStates = dynStates.data() };
+            vk::PipelineRasterizationStateCreateInfo rasterizer{ .polygonMode = vk::PolygonMode::eFill, .cullMode = vk::CullModeFlagBits::eNone, .lineWidth = 1.0f };
+            vk::PipelineMultisampleStateCreateInfo multisampling{ .rasterizationSamples = vk::SampleCountFlagBits::e1 };
+            vk::PipelineDepthStencilStateCreateInfo depthStencil{ .depthTestEnable = vk::True, .depthWriteEnable = vk::False, .depthCompareOp = vk::CompareOp::eLessOrEqual };
+
+            vk::PipelineColorBlendAttachmentState blendAttach{
+                .blendEnable = vk::True,
+                .srcColorBlendFactor = vk::BlendFactor::eSrcAlpha,
+                .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+                .colorBlendOp = vk::BlendOp::eAdd,
+                .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+                .dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+                .alphaBlendOp = vk::BlendOp::eAdd,
+                .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
+            };
+
+            vk::PipelineColorBlendStateCreateInfo colorBlending{ .attachmentCount = 1, .pAttachments = &blendAttach };
+            vk::Format format = vk::Format::eR16G16B16A16Sfloat;
+            vk::PipelineRenderingCreateInfo renderingInfo{ .colorAttachmentCount = 1, .pColorAttachmentFormats = &format, .depthAttachmentFormat = findDepthFormat() };
+
+            m_GridPipeline = device.createGraphicsPipeline(nullptr, vk::GraphicsPipelineCreateInfo{
+                .pNext = &renderingInfo,
+                .stageCount = 2,
+                .pStages = stages.data(),
+                .pVertexInputState = &vertexInput,
+                .pInputAssemblyState = &inputAssembly,
+                .pViewportState = &viewportState,
+                .pRasterizationState = &rasterizer,
+                .pMultisampleState = &multisampling,
+                .pDepthStencilState = &depthStencil,
+                .pColorBlendState = &colorBlending,
+                .pDynamicState = &dynamicState,
+                .layout = *m_GridPipelineLayout
+                });
+            return true;
+        }
+        catch (const std::exception& e) {
+            PROTO_CORE_ERROR("[GRID ERROR]: {}", e.what());
+            return false;
+        }
+    }
+
+    void SceneRenderer::RenderGridPass(vk::raii::CommandBuffer& cmd)
+    {
+        if (!m_ShowGrid || !*m_GridPipeline || !*m_GridPipelineLayout) return;
+
+        CameraComponent* activeCam = nullptr;
+        for (Entity* entity : Entity::GetActiveSceneEntities()) {
+            if (entity && entity->IsActive()) {
+                if (auto* camComp = entity->GetComponent<CameraComponent>()) {
+                    activeCam = camComp;
+                    break;
+                }
+            }
+        }
+        if (!activeCam) return;
+
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_GridPipeline);
+
+        glm::mat4 viewProj = activeCam->GetProjectionMatrix() * activeCam->GetViewMatrix();
+        glm::vec3 camPos = activeCam->GetPosition();
+
+        GridPushConstants pc{};
+        pc.viewProj = viewProj;
+        pc.invViewProj = glm::inverse(viewProj);
+        pc.camPosAndPlaneY = glm::vec4(camPos, m_GridPlaneY);
+        pc.unitParams = glm::vec4(GetGridUnitScaleMeters(), GetGridSubdivisions(), m_GridFadeDistance, m_GridOpacity);
+
+        cmd.pushConstants(*m_GridPipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(GridPushConstants), &pc);
+        cmd.draw(3, 1, 0, 0);
+    }
+
     SceneRenderer::SceneRenderer(vk::raii::Device& dev, vk::Queue queue) : device(dev), graphicsQueue(queue)
     {
         // Create command pool
@@ -116,6 +219,7 @@ namespace Proto
         CreateParticlePipelines();
         CreateSSRPipeline();
         CreateFogPipeline();
+        CreateGridPipeline();
 
         m_EnvCubemap = std::make_shared<Texture>("studio_env_cubemap");
         m_EnvCubemap->CreateProceduralStudioCubemap(64);
@@ -2657,6 +2761,7 @@ namespace Proto
                             cmd.draw(6, SceneRenderer::MAX_PARTICLES, 0, 0);
                         }
                     }
+                    pbrRenderer.RenderGridPass(cmd);
 
                     cmd.endRendering();
 
