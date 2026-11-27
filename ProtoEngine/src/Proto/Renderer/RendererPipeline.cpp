@@ -202,6 +202,187 @@ namespace Proto
         cmd.draw(3, 1, 0, 0);
     }
 
+    void SceneRenderer::InitBindlessResources()
+    {
+        auto& lowLevelRenderer = VulkanRenderer::Get();
+        auto& logicalDevice = lowLevelRenderer.GetLogicalDevice();
+
+        // 1. Allocate UpdateAfterBind Descriptor Pool for Set 1
+        std::array<vk::DescriptorPoolSize, 2> poolSizes = {
+            vk::DescriptorPoolSize{ vk::DescriptorType::eCombinedImageSampler, MAX_BINDLESS_TEXTURES },
+            vk::DescriptorPoolSize{ vk::DescriptorType::eStorageBuffer, 1 }
+        };
+
+        m_BindlessDescriptorPool = logicalDevice.createDescriptorPool({
+            .flags = vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+            .maxSets = 1,
+            .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
+            .pPoolSizes = poolSizes.data()
+            });
+
+        vk::DescriptorSetLayout setLayoutHandle = *descriptorSetLayout;
+        m_BindlessSet = std::move(logicalDevice.allocateDescriptorSets({
+            .descriptorPool = *m_BindlessDescriptorPool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &setLayoutHandle
+            }).front());
+
+        // 2. Allocate Persistently Mapped Host-Visible Material SSBO
+        vk::DeviceSize ssboSize = MAX_GPU_MATERIALS * sizeof(GPUMaterialData);
+        std::tie(m_MaterialSSBOBuffer, m_MaterialSSBOMemory) = lowLevelRenderer.vulkanCommandBuffer->CreateBuffer(
+            ssboSize,
+            vk::BufferUsageFlagBits::eStorageBuffer,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
+        );
+        m_MaterialSSBOMapped = m_MaterialSSBOMemory.mapMemory(0, ssboSize);
+        std::memset(m_MaterialSSBOMapped, 0, ssboSize);
+
+        // 3. Bind Material SSBO to Set 1, Binding 1
+        vk::DescriptorBufferInfo ssboInfo{
+            .buffer = *m_MaterialSSBOBuffer,
+            .offset = 0,
+            .range = ssboSize
+        };
+        vk::WriteDescriptorSet ssboWrite{
+            .dstSet = *m_BindlessSet,
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eStorageBuffer,
+            .pBufferInfo = &ssboInfo
+        };
+        logicalDevice.updateDescriptorSets({ ssboWrite }, {});
+
+        // 4. Register fallback white texture at bindless slot 0
+        RegisterBindlessTexture("default_white");
+    }
+
+    int32_t SceneRenderer::RegisterBindlessTexture(const std::string& textureId)
+    {
+        std::string resolvedId = textureId.empty() ? "default_white" : textureId;
+        auto it = m_TextureBindlessIndexMap.find(resolvedId);
+        if (it != m_TextureBindlessIndexMap.end()) {
+            return it->second;
+        }
+
+        auto& resManager = ServiceLocator::Get<ResourceManager>();
+        auto* tex = resManager.GetResource<Texture>(resolvedId);
+        if (!tex || !tex->IsLoaded()) {
+            if (resolvedId != "default_white") {
+                return RegisterBindlessTexture("default_white");
+            }
+            return -1;
+        }
+
+        if (m_NextBindlessTextureSlot >= MAX_BINDLESS_TEXTURES) {
+            PROTO_CORE_ERROR("[BINDLESS ERROR]: Exceeded MAX_BINDLESS_TEXTURES ({})", MAX_BINDLESS_TEXTURES);
+            return 0;
+        }
+
+        uint32_t slot = m_NextBindlessTextureSlot++;
+        m_TextureBindlessIndexMap[resolvedId] = static_cast<int32_t>(slot);
+
+        vk::DescriptorImageInfo imgInfo{
+            .sampler = *tex->GetSampler(),
+            .imageView = *tex->GetImageView(),
+            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+        };
+
+        vk::WriteDescriptorSet texWrite{
+            .dstSet = *m_BindlessSet,
+            .dstBinding = 0,
+            .dstArrayElement = slot,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+            .pImageInfo = &imgInfo
+        };
+
+        VulkanRenderer::Get().GetLogicalDevice().updateDescriptorSets({ texWrite }, {});
+        return static_cast<int32_t>(slot);
+    }
+
+    uint32_t SceneRenderer::UploadEntityMaterial(Entity* ownerEntity, const Model* model, uint32_t localMatIdx)
+    {
+        if (!model || localMatIdx >= model->materials.size() || !m_MaterialSSBOMapped) {
+            return 0;
+        }
+
+        // Cache key combines Entity pointer + Model pointer + local material index
+        uint64_t key = (reinterpret_cast<uintptr_t>(ownerEntity) * 1099511628211ULL)
+            ^ (reinterpret_cast<uintptr_t>(model) * 1469598103934665603ULL)
+            ^ static_cast<uint64_t>(localMatIdx);
+
+        uint32_t slot = 0;
+        auto it = m_MaterialSlotCache.find(key);
+        if (it != m_MaterialSlotCache.end()) {
+            slot = it->second;
+        }
+        else {
+            if (m_FrameMaterials.size() >= MAX_GPU_MATERIALS) {
+                return 0;
+            }
+            slot = static_cast<uint32_t>(m_FrameMaterials.size());
+            m_FrameMaterials.emplace_back();
+            m_MaterialSlotCache[key] = slot;
+        }
+
+        const Material& src = model->materials[localMatIdx];
+        glm::vec4 baseColor = src.baseColorFactor;
+        glm::vec3 emissive = src.emissiveFactor;
+        float     metallic = src.metallicFactor;
+        float     roughness = src.roughnessFactor;
+        float     clearcoat = src.clearcoatFactor;
+        float     clearcoatRough = src.clearcoatRoughness;
+        float     iridescence = src.iridescenceFactor;
+
+        if (ownerEntity) {
+            if (auto* ovComp = ownerEntity->GetComponent<MaterialOverrideComponent>()) {
+                auto ovIt = ovComp->Overrides.find(localMatIdx);
+                if (ovIt != ovComp->Overrides.end() && ovIt->second.Enabled) {
+                    const auto& ov = ovIt->second;
+                    baseColor = ov.BaseColorFactor;
+                    emissive = ov.EmissiveFactor;
+                    metallic = ov.MetallicFactor;
+                    roughness = ov.RoughnessFactor;
+                    clearcoat = ov.ClearcoatFactor;
+                    clearcoatRough = ov.ClearcoatRoughness;
+                    iridescence = ov.IridescenceFactor;
+                }
+            }
+        }
+
+        auto resolveTex = [&](int modelTexIdx) -> int32_t {
+            if (modelTexIdx >= 0 && modelTexIdx < static_cast<int>(model->textureResourceIds.size())) {
+                return RegisterBindlessTexture(model->textureResourceIds[modelTexIdx]);
+            }
+            return -1;
+            };
+
+        GPUMaterialData gpuMat{};
+        gpuMat.baseColorFactor = baseColor;
+        gpuMat.emissiveFactor = glm::vec4(emissive, m_EmissiveStrength);
+        gpuMat.coatAndIridescence = glm::vec4(clearcoat, clearcoatRough, iridescence, src.iridescenceIor);
+        gpuMat.metallicRoughnessAlpha = glm::vec4(
+            metallic,
+            roughness,
+            (src.alphaMode == AlphaMode::MASK) ? 1.0f : 0.0f,
+            src.alphaCutoff
+        );
+        gpuMat.textureIndices0 = glm::ivec4(
+            resolveTex(src.baseColorTextureIndex),
+            resolveTex(src.metallicRoughnessTextureIndex),
+            resolveTex(src.normalTextureIndex),
+            resolveTex(src.occlusionTextureIndex)
+        );
+        gpuMat.textureIndices1 = glm::ivec4(
+            resolveTex(src.emissiveTextureIndex),
+            -1, -1, -1
+        );
+
+        m_FrameMaterials[slot] = gpuMat;
+        std::memcpy(static_cast<GPUMaterialData*>(m_MaterialSSBOMapped) + slot, &gpuMat, sizeof(GPUMaterialData));
+        return slot;
+    }
+
     SceneRenderer::SceneRenderer(vk::raii::Device& dev, vk::Queue queue) : device(dev), graphicsQueue(queue)
     {
         // Create command pool
@@ -211,6 +392,7 @@ namespace Proto
         // Set up render passes
         SetupRenderPasses();
         CreatePBRPipeline();
+        InitBindlessResources();
         CreateTransparentPipeline();
         CreateDeferredLightingPipeline();
         CreateShadowPipeline();
@@ -241,82 +423,18 @@ namespace Proto
         uint32_t width = swapchainSubsystem->swapChainExtent.width;
         uint32_t height = swapchainSubsystem->swapChainExtent.height;
 
-        // STAGE 1: THE MATERIAL WARM-UP PRE-PASS
-        // We initialize and update descriptor sets completely BEFORE opening the render pass context.
-        // This ensures mid-frame descriptor updates never corrupt our graphics pipeline state!
-        for (auto entity : visibleEntities) {
-            if (!entity || !entity->IsActive()) continue;
-
-            auto* modelComp = entity->GetComponent<ModelComponent>();
-            if (modelComp) {
-                auto modelHandle = modelComp->GetModelHandle();
-                if (modelHandle.IsValid() && modelHandle->IsLoaded()) {
-                    Model* rawModel = modelHandle.Get();
-
-                    // Change: Loop over materials directly instead of linearNodes!
-                    for (size_t m = 0; m < rawModel->materials.size(); m++) {
-                        auto& material = rawModel->materials[m];
-
-                        if (!*material.descriptorSet || *material.descriptorSet == VK_NULL_HANDLE) {
-
-                            vk::DescriptorSetAllocateInfo allocInfo{
-                                .descriptorPool = *renderer.vulkanCommandBuffer->descriptorPool,
-                                .descriptorSetCount = 1,
-                                .pSetLayouts = &*descriptorSetLayout
-                            };
-
-                            auto allocatedSets = logicalDevice.allocateDescriptorSets(allocInfo);
-                            material.descriptorSet = std::move(allocatedSets.front());
-
-                            std::vector<vk::WriteDescriptorSet> writes;
-                            std::vector<std::unique_ptr<vk::DescriptorImageInfo>> stableImageInfos;
-
-                            auto updateTextureSetSlot = [&](int textureIdx, uint32_t dstBinding) {
-                                std::string targetTextureId = "default_white";
-
-                                if (textureIdx >= 0 && textureIdx < static_cast<int>(rawModel->textureResourceIds.size())) {
-                                    targetTextureId = rawModel->textureResourceIds[textureIdx];
-                                }
-
-                                auto& resManager = ServiceLocator::Get<ResourceManager>();
-                                auto* tex = resManager.GetResource<Texture>(targetTextureId);
-
-                                if (!tex || !tex->IsLoaded()) {
-                                    tex = resManager.GetResource<Texture>("default_white");
-                                }
-
-                                if (tex) {
-                                    auto imgInfo = std::make_unique<vk::DescriptorImageInfo>(vk::DescriptorImageInfo{
-                                        .sampler = *tex->GetSampler(),
-                                        .imageView = *tex->GetImageView(),
-                                        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
-                                        });
-
-                                    writes.push_back(vk::WriteDescriptorSet{
-                                        .dstSet = *material.descriptorSet,
-                                        .dstBinding = dstBinding,
-                                        .descriptorCount = 1,
-                                        .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-                                        .pImageInfo = imgInfo.get()
-                                        });
-                                    stableImageInfos.push_back(std::move(imgInfo));
-                                }
-                            };
-
-                            // Base-0 Continuous Bindings matching your shader attributes
-                            updateTextureSetSlot(material.baseColorTextureIndex, 0);
-                            updateTextureSetSlot(material.metallicRoughnessTextureIndex, 1);
-                            updateTextureSetSlot(material.normalTextureIndex, 2);
-                            updateTextureSetSlot(material.occlusionTextureIndex, 3);
-                            updateTextureSetSlot(material.emissiveTextureIndex, 4);
-
-                            if (!writes.empty()) {
-                                logicalDevice.updateDescriptorSets(writes, {});
-                            }
-                        }
-                    }
-                }
-            }
+        if (!renderer.vulkanCommandBuffer->descriptorSets.empty() && *m_BindlessSet) {
+            std::array<vk::DescriptorSet, 2> globalSets = {
+                *renderer.vulkanCommandBuffer->descriptorSets[currentFrame],
+                *m_BindlessSet
+            };
+            activeCmdBuffer.bindDescriptorSets(
+                vk::PipelineBindPoint::eGraphics,
+                *pbrPipelineLayout,
+                0,
+                globalSets,
+                {}
+            );
         }
 
         // Bind our verified graphics state context layout definitions
@@ -342,16 +460,6 @@ namespace Proto
         }
 
         updateUniformBuffer(currentFrame, nullptr, activeCameraComponent);
-
-        if (!renderer.vulkanCommandBuffer->descriptorSets.empty()) {
-            activeCmdBuffer.bindDescriptorSets(
-                vk::PipelineBindPoint::eGraphics,
-                *pbrPipelineLayout,
-                0,
-                { *renderer.vulkanCommandBuffer->descriptorSets[currentFrame] },
-                {}
-            );
-        }
 
         // Draw loop
         for (auto entity : visibleEntities) {
@@ -465,17 +573,37 @@ namespace Proto
             // or let a local class variable hold it:
             vk::raii::DescriptorSetLayout uboDescriptorSetLayout = device.createDescriptorSetLayout(uboLayoutInfo);
 
-            // AUTONOMOUSLY INITIALIZE DESCRIPTOR SET 1 LAYOUT (MATERIAL TEXTURES)
-            std::array<vk::DescriptorSetLayoutBinding, 5> texBindings;
-            for (uint32_t b = 0; b < 5; ++b) {
-                texBindings[b] = vk::DescriptorSetLayoutBinding{
-                    .binding = b, // Bindings 1, 2, 3, 4, 5 matching your shader architecture parameters
+            std::array<vk::DescriptorSetLayoutBinding, 2> bindlessBindings = {
+                vk::DescriptorSetLayoutBinding{
+                    .binding = 0,
                     .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                    .descriptorCount = MAX_BINDLESS_TEXTURES,
+                    .stageFlags = vk::ShaderStageFlagBits::eFragment
+                },
+                vk::DescriptorSetLayoutBinding{
+                    .binding = 1,
+                    .descriptorType = vk::DescriptorType::eStorageBuffer,
                     .descriptorCount = 1,
                     .stageFlags = vk::ShaderStageFlagBits::eFragment
-                };
-            }
-            vk::DescriptorSetLayoutCreateInfo texLayoutInfo{ .bindingCount = 5, .pBindings = texBindings.data() };
+                }
+            };
+
+            std::array<vk::DescriptorBindingFlags, 2> bindingFlags = {
+                vk::DescriptorBindingFlagBits::ePartiallyBound | vk::DescriptorBindingFlagBits::eUpdateAfterBind,
+                vk::DescriptorBindingFlagBits::eUpdateAfterBind
+            };
+
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
+                .bindingCount = static_cast<uint32_t>(bindingFlags.size()),
+                .pBindingFlags = bindingFlags.data()
+            };
+
+            vk::DescriptorSetLayoutCreateInfo texLayoutInfo{
+                .pNext = &flagsInfo,
+                .flags = vk::DescriptorSetLayoutCreateFlagBits::eUpdateAfterBindPool,
+                .bindingCount = static_cast<uint32_t>(bindlessBindings.size()),
+                .pBindings = bindlessBindings.data()
+            };
             descriptorSetLayout = device.createDescriptorSetLayout(texLayoutInfo);
 
             // PACK BOTH OPERATIONAL RAII HANDLES INTO THE LAYOUT MANAGER
@@ -630,59 +758,6 @@ namespace Proto
         if (currentFrame < cmdBufferUtil->uniformBuffersMapped.size() && cmdBufferUtil->uniformBuffersMapped[currentFrame] != nullptr) {
             memcpy(cmdBufferUtil->uniformBuffersMapped[currentFrame], &ubo, sizeof(PBRUniformBufferObject));
         }
-    }
-
-    // Push material properties to shader
-    void SceneRenderer::pushMaterialProperties(vk::CommandBuffer commandBuffer, const Model* model,
-        uint32_t materialIndex, const glm::mat4& globalMatrix, Entity* ownerEntity) {
-        const Material& material = model->materials[materialIndex];
-
-        glm::vec4 baseColor = material.baseColorFactor;
-        glm::vec3 emissive = material.emissiveFactor;
-        float     metallic = material.metallicFactor;
-        float     roughness = material.roughnessFactor;
-        float     clearcoat = material.clearcoatFactor;
-        float     clearcoatRough = material.clearcoatRoughness;
-        float     iridescence = material.iridescenceFactor;
-
-        if (ownerEntity) {
-            if (auto* ovComp = ownerEntity->GetComponent<MaterialOverrideComponent>()) {
-                auto it = ovComp->Overrides.find(materialIndex);
-                if (it != ovComp->Overrides.end() && it->second.Enabled) {
-                    const auto& ov = it->second;
-                    baseColor = ov.BaseColorFactor;
-                    emissive = ov.EmissiveFactor;
-                    metallic = ov.MetallicFactor;
-                    roughness = ov.RoughnessFactor;
-                    clearcoat = ov.ClearcoatFactor;
-                    clearcoatRough = ov.ClearcoatRoughness;
-                    iridescence = ov.IridescenceFactor;
-                }
-            }
-        }
-
-        PushConstantBlock pushConstants{};
-        pushConstants.modelMatrix = globalMatrix;
-        pushConstants.baseColorFactor = baseColor;
-        pushConstants.emissiveFactor = glm::vec4(emissive, m_EmissiveStrength);
-        pushConstants.coatAndIridescence = glm::vec4(clearcoat, clearcoatRough, iridescence, material.iridescenceIor);
-        pushConstants.metallicRoughnessFactors = glm::vec4(metallic, roughness, 0.0f, 0.0f);
-
-        pushConstants.baseColorTextureSet = material.baseColorTextureIndex;
-        pushConstants.physicalDescriptorTextureSet = material.metallicRoughnessTextureIndex;
-        pushConstants.normalTextureSet = material.normalTextureIndex;
-        pushConstants.occlusionTextureSet = material.occlusionTextureIndex;
-        pushConstants.emissiveTextureSet = material.emissiveTextureIndex;
-        pushConstants.alphaMask = (material.alphaMode == AlphaMode::MASK) ? 1.0f : 0.0f;
-        pushConstants.alphaMaskCutoff = material.alphaCutoff;
-
-        commandBuffer.pushConstants(
-            *pbrPipelineLayout,
-            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
-            0,
-            sizeof(PushConstantBlock),
-            &pushConstants
-        );
     }
 
     bool SceneRenderer::CreateDeferredLightingPipeline()
@@ -1115,7 +1190,7 @@ namespace Proto
             vk::PipelineRenderingCreateInfo renderingInfo;
             vk::Format colorFormat = vk::Format::eR16G16B16A16Sfloat;
             renderingInfo.setColorAttachmentCount(1)                
-                .setPColorAttachmentFormats(&colorFormat) //.setPColorAttachmentFormats(&swapChainImageFormat)
+                .setPColorAttachmentFormats(&colorFormat)
                 .setDepthAttachmentFormat(findDepthFormat());
 
             vk::GraphicsPipelineCreateInfo pipelineInfo;
@@ -1150,12 +1225,16 @@ namespace Proto
 
         activeCmdBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_TransparentPipeline);
 
-        if (!renderer.vulkanCommandBuffer->descriptorSets.empty()) {
+        if (!renderer.vulkanCommandBuffer->descriptorSets.empty() && *m_BindlessSet) {
+            std::array<vk::DescriptorSet, 2> globalSets = {
+                *renderer.vulkanCommandBuffer->descriptorSets[currentFrame],
+                *m_BindlessSet
+            };
             activeCmdBuffer.bindDescriptorSets(
                 vk::PipelineBindPoint::eGraphics,
                 *pbrPipelineLayout,
                 0,
-                { *renderer.vulkanCommandBuffer->descriptorSets[currentFrame] },
+                globalSets,
                 {}
             );
         }
@@ -1663,27 +1742,19 @@ namespace Proto
         glm::mat4 globalMatrix = parentMatrix * node->getLocalMatrix();
 
         if (node->mesh && node->mesh->IsLoaded()) {
-            auto& material = const_cast<Model*>(model)->materials[node->materialIndex];
+            const auto& material = model->materials[node->materialIndex];
             bool isTransparent = (material.alphaMode == AlphaMode::BLEND);
 
             if (isTransparent == renderTransparentOnly) {
-                auto& lowLevelRenderer = VulkanRenderer::Get();
-                uint32_t currentFrame = lowLevelRenderer.vulkanSwapChain->GetFrameIndex();
-
-                pushMaterialProperties(*cmd, model, node->materialIndex, globalMatrix, ownerEntity);
-
-                vk::DescriptorSet set0 = !lowLevelRenderer.vulkanCommandBuffer->descriptorSets.empty()
-                    ? *lowLevelRenderer.vulkanCommandBuffer->descriptorSets[currentFrame]
-                    : vk::DescriptorSet{ nullptr };
-                vk::DescriptorSet set1 = *material.descriptorSet;
-
-                if (set0 != nullptr && set1 != nullptr) {
-                    std::array<vk::DescriptorSet, 2> sets = { set0, set1 };
-                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrPipelineLayout, 0, { set0, set1 }, {});
-                }
-                else if (set0 != nullptr) {
-                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pbrPipelineLayout, 0, { vk::DescriptorSet(set0) }, {});
-                }
+                uint32_t matSlot = UploadEntityMaterial(ownerEntity, model, node->materialIndex);
+                PushConstantBlock pc{ globalMatrix, matSlot,{ 0, 0, 0 } };
+                cmd.pushConstants(
+                    *pbrPipelineLayout,
+                    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+                    0,
+                    sizeof(PushConstantBlock),
+                    &pc
+                );
 
                 cmd.bindVertexBuffers(0, { *node->mesh->GetVertexBuffer() }, { 0 });
                 cmd.bindIndexBuffer(*node->mesh->GetIndexBuffer(), 0, vk::IndexType::eUint32);
@@ -1691,7 +1762,6 @@ namespace Proto
             }
         }
 
-        // Still traverse children, but skip drawing BLEND geometry in the opaque G-Buffer pass
         for (auto child : node->children) {
             RenderModelNode(child, globalMatrix, cmd, model, camera, renderTransparentOnly, ownerEntity);
         }

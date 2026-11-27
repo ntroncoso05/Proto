@@ -48,11 +48,25 @@ namespace Proto
 		}
 
 		// query for Vulkan 1.3 features
-		vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceVulkan11Features> featureChain = {
-			{.features = {.samplerAnisotropy = true}},                   // vk::PhysicalDeviceFeatures2 //{.features = {.sampleRateShading = vk::True}}, // enable Sample Shading which will improve the image quality even further, though at an additional performance cost
-			{.synchronization2 = true, .dynamicRendering = true},        // vk::PhysicalDeviceVulkan13Features
-			{.extendedDynamicState = true},                               // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
-			{.shaderDrawParameters = vk::True}
+		vk::StructureChain<
+			vk::PhysicalDeviceFeatures2,
+			vk::PhysicalDeviceVulkan11Features,
+			vk::PhysicalDeviceVulkan12Features,
+			vk::PhysicalDeviceVulkan13Features,
+			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
+		> featureChain = {
+			{ .features = { .samplerAnisotropy = true } },
+			{ .shaderDrawParameters = vk::True },
+			{
+				.shaderSampledImageArrayNonUniformIndexing = vk::True,
+				.descriptorBindingSampledImageUpdateAfterBind = vk::True,
+				.descriptorBindingStorageBufferUpdateAfterBind = vk::True,
+				.descriptorBindingPartiallyBound = vk::True,
+				.descriptorBindingVariableDescriptorCount = vk::True,
+				.runtimeDescriptorArray = vk::True
+			},
+			{ .synchronization2 = true, .dynamicRendering = true },
+			{ .extendedDynamicState = true }
 		};
 
 		// create a Device
@@ -94,15 +108,24 @@ namespace Proto
 				});
 
 		// Check if the physicalDevice supports the required features
-		auto features = physicalDevice.template getFeatures2<vk::PhysicalDeviceFeatures2,
+		auto features = physicalDevice.template getFeatures2<
+			vk::PhysicalDeviceFeatures2,
+			vk::PhysicalDeviceVulkan11Features,
+			vk::PhysicalDeviceVulkan12Features,
 			vk::PhysicalDeviceVulkan13Features,
-			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
-			vk::PhysicalDeviceVulkan11Features >();
+			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
+		>();
 
-		bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy &&
+		const auto& f12 = features.template get<vk::PhysicalDeviceVulkan12Features>();
+		bool supportsRequiredFeatures =
+			features.template get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy &&
+			features.template get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters &&
+			f12.shaderSampledImageArrayNonUniformIndexing &&
+			f12.descriptorBindingSampledImageUpdateAfterBind &&
+			f12.descriptorBindingPartiallyBound &&
+			f12.runtimeDescriptorArray &&
 			features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
-			features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState &&
-			features.template get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters;
+			features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
 
 		// Return true if the physicalDevice meets all the criteria
 		return supportsVulkan1_3 && supportsGraphicsAndPresent && supportsAllRequiredExtensions && supportsRequiredFeatures;

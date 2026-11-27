@@ -186,7 +186,7 @@ if(NOT ANDROID)
             COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_OUT_DIR}"
             COMMAND ${SLANGC_EXECUTABLE} "${SHADER_FILE}"
                     -target spirv
-                    -profile spirv_1_4
+                    -profile spirv_1_5
                     -emit-spirv-directly
                     -fvk-use-entrypoint-name
                     ${DYNAMIC_ENTRY_ARGS}

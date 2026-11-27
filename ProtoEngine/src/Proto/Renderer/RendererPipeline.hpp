@@ -9,21 +9,18 @@ namespace Proto
 {
     // Explicit 64-byte aligned structure layout matching your Slang PBR shader exactly
     struct PushConstantBlock {
-        glm::mat4 modelMatrix = glm::mat4(1.0f);     // Pass unique transforms directly to the hardware!
-        glm::vec4 baseColorFactor = glm::vec4(1.0f); // float4 baseColorFactor
-        glm::vec4 emissiveFactor = glm::vec4(1.0f);  // xyz = emissiveFactor, w = emissiveStrength
-        glm::vec4 coatAndIridescence = glm::vec4(1.0f); // x = clearcoat, y = clearcoatRoughness, z = iridescence, w = iridescenceIor
-        glm::vec4 metallicRoughnessFactors = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f); // X = metallic, Y = roughness
+        glm::mat4 modelMatrix = glm::mat4(1.0f);
+        uint32_t  materialIndex = 0;
+        uint32_t  _pad[3] = { 0, 0, 0 };
+    };
 
-        int baseColorTextureSet = -1; // Texture binding index for base color
-        int physicalDescriptorTextureSet = -1; // Texture binding for metallic/roughness
-        int normalTextureSet = -1; // Texture binding for normal maps
-        int occlusionTextureSet = -1; // Texture binding for ambient occlusion
-        int emissiveTextureSet = -1; // Texture binding for emissive maps
-
-        float alphaMask = 0.0f; // Alpha masking enable flag
-        float alphaMaskCutoff = 0.5f; // Alpha cutoff threshold
-        //float padding = 0.0f; // Explicit padding to keep 4-byte struct alignment clean
+    struct GPUMaterialData {
+        glm::vec4 baseColorFactor{ 1.0f };
+        glm::vec4 emissiveFactor{ 0.0f, 0.0f, 0.0f, 1.0f };
+        glm::vec4 coatAndIridescence{ 0.0f, 0.04f, 0.0f, 1.5f };
+        glm::vec4 metallicRoughnessAlpha{ 0.0f, 0.5f, 0.0f, 0.5f };
+        glm::ivec4 textureIndices0{ -1, -1, -1, -1 }; // baseColor, metallicRoughness, normal, occlusion
+        glm::ivec4 textureIndices1{ -1, -1, -1, -1 }; // emissive, reserved...
     };
 
     class CullingSystem {
@@ -296,12 +293,12 @@ namespace Proto
     };
 
     class SceneRenderer; // Forward declaration for our friend visibility hook
+
     // Lighting pass for deferred rendering
     class LightingPass : public RenderPass {
     private:
         GeometryPass* geometryPass;
         SceneRenderer* sceneRenderer;
-        //std::vector<Light*> lights;
 
     public:
         LightingPass(const std::string& name, GeometryPass* gPass, SceneRenderer* renderer);
@@ -557,6 +554,25 @@ namespace Proto
 
         vk::raii::PipelineLayout m_GridPipelineLayout{ nullptr };
         vk::raii::Pipeline       m_GridPipeline{ nullptr };
+
+        // Bindless
+        static constexpr uint32_t MAX_BINDLESS_TEXTURES = 1024;
+        static constexpr uint32_t MAX_GPU_MATERIALS = 2048;
+
+        vk::raii::DescriptorPool      m_BindlessDescriptorPool{ nullptr };
+        vk::raii::DescriptorSet       m_BindlessSet{ nullptr };
+        vk::raii::Buffer              m_MaterialSSBOBuffer{ nullptr };
+        vk::raii::DeviceMemory        m_MaterialSSBOMemory{ nullptr };
+        void* m_MaterialSSBOMapped = nullptr;
+
+        std::unordered_map<std::string, int32_t> m_TextureBindlessIndexMap;
+        uint32_t                                 m_NextBindlessTextureSlot = 0;
+        std::vector<GPUMaterialData>             m_FrameMaterials;
+        std::unordered_map<uint64_t, uint32_t>   m_MaterialSlotCache;
+
+        void InitBindlessResources();
+        int32_t RegisterBindlessTexture(const std::string& textureId);
+        uint32_t UploadEntityMaterial(Entity* ownerEntity, const Model* model, uint32_t localMatIdx);
     public:
         SceneRenderer() = default;
         SceneRenderer(vk::raii::Device& dev, vk::Queue queue);
@@ -567,7 +583,6 @@ namespace Proto
 
         bool CreatePBRPipeline();
         void updateUniformBuffer(uint32_t currentFrame, Entity* entity, CameraComponent* camera, const glm::mat4& modelMatrix = glm::mat4(1.0f));
-        void pushMaterialProperties(vk::CommandBuffer commandBuffer, const Model* model, uint32_t materialIndex, const glm::mat4& globalMatrix, Entity* ownerEntity = nullptr);
         void RenderModelNode(Node* node, const glm::mat4& parentMatrix, vk::raii::CommandBuffer& cmd, const Model* model, CameraComponent* camera, bool renderTransparentOnly = false, Entity* ownerEntity = nullptr);
         inline vk::DescriptorSetLayout GetPBRDescriptorSetLayout() const { return *descriptorSetLayout; }
 

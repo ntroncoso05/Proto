@@ -1,6 +1,8 @@
 // @entry: VSMain
 // @entry: PSMain
 
+#include "BindlessMaterial.hlsli"
+
 // This shader reuses the exact vertex layout, Set 0 UBO, Set 1 material textures, and push constants from pbr.slang, 
 // while running direct PBR lighting + Reinhard tone mapping + gamma correction from DeferredLighting.slang into a single alpha-blended SV_Target0 output.
 
@@ -35,33 +37,9 @@ struct UniformBufferObject {
     float scaleIBLAmbient; // Added to match C++ UBO size
 };
 
-struct PushConstants {
-    float4x4 modelMatrix;
-    float4 baseColorFactor;
-    float4 emissiveFactor;              // xyz = color, w = strength
-    float4 coatAndIridescence;          // x = clearcoat, y = clearcoatRoughness, z = iridescence, w = iridescenceIor
-    float metallicFactor;
-    float roughnessFactor;
-    int baseColorTextureSet;
-    int physicalDescriptorTextureSet;
-    int normalTextureSet;
-    int occlusionTextureSet;
-    int emissiveTextureSet;
-    float alphaMask;
-    float alphaMaskCutoff;
-};
-
 static const float PI = 3.14159265359;
 
 [[vk::binding(0, 0)]] ConstantBuffer<UniformBufferObject> ubo;
-
-[[vk::binding(0, 1)]] Sampler2D baseColorMap;
-[[vk::binding(1, 1)]] Sampler2D metallicRoughnessMap;
-[[vk::binding(2, 1)]] Sampler2D normalMap;
-[[vk::binding(3, 1)]] Sampler2D occlusionMap;
-[[vk::binding(4, 1)]] Sampler2D emissiveMap;
-
-[[vk::push_constant]] PushConstants material;
 
 float DistributionGGX(float NdotH, float roughness) {
     float a = roughness * roughness;
@@ -87,32 +65,32 @@ float3 FresnelSchlick(float cosTheta, float3 F0) {
 VSOutput VSMain(VSInput input)
 {
     VSOutput output;
-    float4 worldPos = mul(material.modelMatrix, float4(input.Position, 1.0));
+    float4 worldPos = mul(pushConst.modelMatrix, float4(input.Position, 1.0));
     output.Position = mul(ubo.proj, mul(ubo.view, worldPos));
     output.WorldPos = worldPos.xyz;
-    output.Normal = normalize(mul((float3x3)material.modelMatrix, input.Normal));
+    output.Normal = normalize(mul((float3x3)pushConst.modelMatrix, input.Normal));
     output.UV = input.UV;
     output.Color = input.Color;
     return output;
 }
 
 [shader("fragment")]
-float4 PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
+float4 PSMain(VSOutput input, bool isFrontFace: SV_IsFrontFace) : SV_Target0
 {
-    float4 baseColor = baseColorMap.Sample(input.UV) * material.baseColorFactor;
+    GPUMaterialData mat = g_Materials[pushConst.materialData.x];
+    float4 baseColor = SampleBindless(mat.textureIndices0.x, input.UV, float4(1.0)) * mat.baseColorFactor;
 
-    // Discard transparent cutout pixels (grilles, vents, foliage, decals)
-    if (material.alphaMask > 0.5 && baseColor.a < material.alphaMaskCutoff) {
+    if (mat.metallicRoughnessAlpha.z > 0.5 && baseColor.a < mat.metallicRoughnessAlpha.w) {
         discard;
     }
 
-    float2 metallicRoughness = metallicRoughnessMap.Sample(input.UV).bg;
-    float metallic = metallicRoughness.x * material.metallicFactor;
-    float roughness = clamp(metallicRoughness.y * material.roughnessFactor, 0.04, 1.0);
+    float2 mrSample = SampleBindless(mat.textureIndices0.y, input.UV, float4(1.0)).bg;
+    float metallic = mrSample.x * mat.metallicRoughnessAlpha.x;
+    float roughness = mrSample.y * mat.metallicRoughnessAlpha.y;
 
-    float ao = (material.occlusionTextureSet >= 0) ? occlusionMap.Sample(input.UV).r : 1.0;
-    float3 emissiveTex = (material.emissiveTextureSet >= 0) ? emissiveMap.Sample(input.UV).rgb : float3(1.0);
-    float3 emissive = emissiveTex * material.emissiveFactor.rgb * material.emissiveFactor.w;
+    float ao = (mat.textureIndices0.w >= 0) ? SampleBindless(mat.textureIndices0.w, input.UV, float4(1.0)).r : 1.0;
+    float3 emissiveTex = SampleBindless(mat.textureIndices1.x, input.UV, float4(1.0)).rgb;
+    float3 emissive = emissiveTex * mat.emissiveFactor.rgb * mat.emissiveFactor.w;
 
     // Flip normal on back faces so double-sided glass shades properly from inside and outside
     float3 N = normalize(input.Normal) * (isFrontFace ? 1.0 : -1.0);
@@ -160,6 +138,7 @@ float4 PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float fresnelRim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
     float3 R = reflect(-V, N);
     float3 envReflect = lerp(float3(0.05, 0.05, 0.05), float3(0.22, 0.28, 0.38), saturate(R.y * 0.5 + 0.5));
+
     // Scale ambient & reflection by ubo.scaleIBLAmbient so glass darkens properly when lights are off
     float3 ambient = (float3(0.04, 0.05, 0.07) * baseColor.rgb * ao + envReflect * (0.15 + 0.65 * fresnelRim)) * ubo.scaleIBLAmbient;
     float3 color = ambient + Lo * 1.5 + emissive;
@@ -167,7 +146,6 @@ float4 PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     // Reinhard tone mapping (no manual gamma pow, since FinalColor is Srgb!)
     //color = color / (color + float3(1.0));
 
-    //float finalAlpha = saturate(max(baseColor.a, 0.20 + fresnelRim * 0.50));
     float finalAlpha = saturate(max(baseColor.a * 0.5, 0.06 + fresnelRim * 0.55));
     return float4(color, finalAlpha);
 }
